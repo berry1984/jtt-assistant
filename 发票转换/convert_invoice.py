@@ -41,7 +41,7 @@ from openpyxl.utils import get_column_letter
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-TIANTU_TEMPLATE = os.path.join(SCRIPT_DIR, '天图单票专用模板.xlsx')
+TIANTU_TEMPLATE = os.path.join(SCRIPT_DIR, '天图单票专用模板20260601.xlsx')
 HANGLE_UK_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 英国发票模板9.9更新.xls')
 HANGLE_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xls')
 
