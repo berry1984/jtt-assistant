@@ -171,6 +171,18 @@ def convert_to_tiantu(tr, output_path):
         print('❌ ERROR: 天图模板文件不存在!')
         return False
 
+    # 输出模板版本日志
+    tpl_size = os.path.getsize(TIANTU_TEMPLATE)
+    print(f'  模板大小: {tpl_size} bytes')
+    # 检查新模板特征：Sheet2行数
+    try:
+        tmp_wb = load_workbook(TIANTU_TEMPLATE, data_only=True)
+        s2_rows = tmp_wb['Sheet2'].max_row
+        print(f'  模板Sheet2服务数: {s2_rows} 条')
+        tmp_wb.close()
+    except:
+        pass
+
     # 复制模板
     shutil.copy(TIANTU_TEMPLATE, output_path)
     wb = load_workbook(output_path)
