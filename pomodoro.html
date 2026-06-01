@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄钟</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; background: #1a1a2e; color: #eee;
+  }
+  .container {
+    text-align: center; padding: 40px; width: 420px;
+    background: #16213e; border-radius: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  h1 { font-size: 28px; font-weight: 600; letter-spacing: 2px; margin-bottom: 30px; color: #e94560; }
+
+  /* mode toggle */
+  .mode-toggle { display: flex; background: #0f3460; border-radius: 12px; padding: 4px; margin-bottom: 30px; }
+  .mode-btn {
+    flex: 1; padding: 10px; border: none; background: transparent; color: #888;
+    font-size: 15px; cursor: pointer; border-radius: 10px; transition: .3s; font-weight: 500;
+  }
+  .mode-btn.active { background: #e94560; color: #fff; box-shadow: 0 4px 15px rgba(233,69,96,.4); }
+
+  /* timer */
+  .timer-circle {
+    position: relative; width: 260px; height: 260px; margin: 0 auto 30px;
+    border-radius: 50%; background: #0f3460; display: flex; justify-content: center; align-items: center;
+  }
+  .timer-circle svg { position: absolute; transform: rotate(-90deg); }
+  .timer-circle svg circle {
+    fill: none; stroke-width: 6; stroke-linecap: round;
+  }
+  .timer-circle svg circle.bg { stroke: #1a1a3e; }
+  .timer-circle svg circle.progress {
+    stroke: #e94560; stroke-dasharray: 753.98; stroke-dashoffset: 0;
+    transition: stroke-dashoffset .4s ease;
+  }
+  .timer-circle.break svg circle.progress { stroke: #4ecca3; }
+  .timer-display { font-size: 64px; font-weight: 700; letter-spacing: 4px; font-variant-numeric: tabular-nums; }
+  .timer-display.minutes { font-size: 56px; }
+  .timer-label { position: absolute; bottom: 50px; font-size: 13px; color: #888; letter-spacing: 1px; }
+
+  /* controls */
+  .controls { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
+  .controls button {
+    padding: 12px 32px; border: none; border-radius: 12px; font-size: 16px;
+    font-weight: 600; cursor: pointer; transition: .2s; min-width: 100px;
+  }
+  .controls button:active { transform: scale(.95); }
+  .btn-start { background: #e94560; color: #fff; box-shadow: 0 4px 15px rgba(233,69,96,.4); }
+  .btn-start:hover { box-shadow: 0 6px 20px rgba(233,69,96,.5); }
+  .btn-start.running { background: #f5a623; box-shadow: 0 4px 15px rgba(245,166,35,.4); }
+  .btn-start.running:hover { box-shadow: 0 6px 20px rgba(245,166,35,.5); }
+  .btn-reset { background: #0f3460; color: #aaa; }
+  .btn-reset:hover { background: #1a4a7a; color: #eee; }
+
+  /* stats */
+  .stats { display: flex; justify-content: center; gap: 40px; padding-top: 20px; border-top: 1px solid #0f3460; }
+  .stat-item { text-align: center; }
+  .stat-number { font-size: 28px; font-weight: 700; color: #e94560; }
+  .stat-label { font-size: 12px; color: #666; margin-top: 4px; letter-spacing: 1px; }
+
+  /* notification permission */
+  .notif-bar {
+    margin-top: 16px; font-size: 12px; color: #888;
+  }
+  .notif-bar a { color: #4ecca3; cursor: pointer; text-decoration: underline; }
+
+  /* settings */
+  .settings { margin-top: 20px; display: flex; gap: 20px; justify-content: center; }
+  .settings label { font-size: 13px; color: #888; display: flex; align-items: center; gap: 8px; }
+  .settings input {
+    width: 60px; padding: 6px 10px; border: 1px solid #0f3460; border-radius: 8px;
+    background: #0f3460; color: #eee; font-size: 14px; text-align: center;
+  }
+  .settings input:focus { outline: none; border-color: #e94560; }
+  input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🍅 番茄钟</h1>
+
+  <div class="mode-toggle">
+    <button class="mode-btn active" data-mode="work">专注</button>
+    <button class="mode-btn" data-mode="shortBreak">短休息</button>
+    <button class="mode-btn" data-mode="longBreak">长休息</button>
+  </div>
+
+  <div class="timer-circle" id="timerCircle">
+    <svg width="260" height="260" viewBox="0 0 260 260">
+      <circle class="bg" cx="130" cy="130" r="120"/>
+      <circle class="progress" id="progressRing" cx="130" cy="130" r="120"/>
+    </svg>
+    <div class="timer-display" id="timerDisplay">25:00</div>
+    <div class="timer-label" id="timerLabel">专注时间</div>
+  </div>
+
+  <div class="controls">
+    <button class="btn-start" id="startBtn">开始</button>
+    <button class="btn-reset" id="resetBtn">重置</button>
+  </div>
+
+  <div class="stats">
+    <div class="stat-item">
+      <div class="stat-number" id="completedCount">0</div>
+      <div class="stat-label">已完成</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-number" id="currentSession">1</div>
+      <div class="stat-label">当前第</div>
+    </div>
+  </div>
+
+  <div class="settings">
+    <label>专注 <input type="number" id="workDuration" value="25" min="1" max="120"></label>
+    <label>短休 <input type="number" id="shortBreakDuration" value="5" min="1" max="60"></label>
+    <label>长休 <input type="number" id="longBreakDuration" value="15" min="1" max="60"></label>
+  </div>
+
+  <div class="notif-bar hidden" id="notifBar">
+    🔔 计时结束时发送通知
+    <a id="enableNotif">启用桌面通知</a>
+  </div>
+</div>
+
+<script>
+const C = {
+  CIRCUMFERENCE: 2 * Math.PI * 120,
+  LONG_BREAK_INTERVAL: 4,
+};
+
+const state = {
+  mode: 'work',
+  timeLeft: 25 * 60,
+  totalTime: 25 * 60,
+  running: false,
+  completed: 0,
+  session: 1,
+  timerId: null,
+  notification: null,
+  notifGranted: false,
+};
+
+const $ = id => document.getElementById(id);
+const display = $('timerDisplay');
+const progressRing = $('progressRing');
+const startBtn = $('startBtn');
+const resetBtn = $('resetBtn');
+const timerCircle = $('timerCircle');
+const timerLabel = $('timerLabel');
+const completedCount = $('completedCount');
+const currentSession = $('currentSession');
+const notifBar = $('notifBar');
+const enableNotif = $('enableNotif');
+
+progressRing.style.strokeDasharray = C.CIRCUMFERENCE;
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function getDuration() {
+  const map = {
+    work: parseInt($('workDuration').value) || 25,
+    shortBreak: parseInt($('shortBreakDuration').value) || 5,
+    longBreak: parseInt($('longBreakDuration').value) || 15,
+  };
+  return map[state.mode] * 60;
+}
+
+function updateDisplay() {
+  display.textContent = formatTime(state.timeLeft);
+  const fraction = state.timeLeft / state.totalTime;
+  progressRing.style.strokeDashoffset = C.CIRCUMFERENCE * (1 - fraction);
+  document.title = `${formatTime(state.timeLeft)} - 番茄钟`;
+}
+
+function updateModeUI() {
+  const labels = { work: '专注时间', shortBreak: '短休息', longBreak: '长休息' };
+  timerLabel.textContent = labels[state.mode];
+  timerCircle.classList.toggle('break', state.mode !== 'work');
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === state.mode);
+  });
+
+  state.totalTime = getDuration();
+  if (!state.running) {
+    state.timeLeft = state.totalTime;
+    updateDisplay();
+  }
+}
+
+function switchMode(mode) {
+  if (state.running) stopTimer();
+  state.mode = mode;
+  state.totalTime = getDuration();
+  state.timeLeft = state.totalTime;
+  startBtn.textContent = '开始';
+  startBtn.classList.remove('running');
+  updateModeUI();
+  updateDisplay();
+}
+
+function tick() {
+  state.timeLeft--;
+  updateDisplay();
+
+  if (state.timeLeft <= 0) {
+    stopTimer();
+    onComplete();
+  }
+}
+
+function startTimer() {
+  if (state.running) { pauseTimer(); return; }
+  if (state.timeLeft <= 0) resetTimer();
+  state.running = true;
+  startBtn.textContent = '暂停';
+  startBtn.classList.add('running');
+  state.timerId = setInterval(tick, 1000);
+}
+
+function pauseTimer() {
+  state.running = false;
+  startBtn.textContent = '继续';
+  startBtn.classList.remove('running');
+  clearInterval(state.timerId);
+}
+
+function stopTimer() {
+  state.running = false;
+  startBtn.textContent = '开始';
+  startBtn.classList.remove('running');
+  clearInterval(state.timerId);
+}
+
+function resetTimer() {
+  stopTimer();
+  state.timeLeft = state.totalTime;
+  updateDisplay();
+}
+
+function onComplete() {
+  playSound();
+  sendNotification();
+
+  if (state.mode === 'work') {
+    state.completed++;
+    completedCount.textContent = state.completed;
+
+    if (state.session % C.LONG_BREAK_INTERVAL === 0) {
+      switchMode('longBreak');
+    } else {
+      switchMode('shortBreak');
+    }
+    state.session++;
+    currentSession.textContent = state.session;
+  } else {
+    switchMode('work');
+  }
+
+  // auto-start break or work
+  startTimer();
+}
+
+function playSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playTone = (freq, start, dur) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.5, start);
+      g.gain.exponentialRampToValueAtTime(0.01, start + dur);
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(start);
+      o.stop(start + dur);
+    };
+    // three descending tones
+    playTone(880, 0, 0.15);
+    playTone(660, 0.18, 0.15);
+    playTone(520, 0.36, 0.3);
+    // reset audio context after a short delay to allow cleanup
+    setTimeout(() => ctx.close(), 1000);
+  } catch (e) { /* audio not available */ }
+}
+
+function sendNotification() {
+  if (!state.notifGranted) return;
+  const titles = { work: '专注结束！', shortBreak: '短休息结束', longBreak: '长休息结束' };
+  const bodies = { work: '做得好！休息一下吧', shortBreak: '该开始下一轮专注了', longBreak: '休息够了？开始工作吧' };
+  try {
+    state.notification = new Notification(titles[state.mode], {
+      body: bodies[state.mode],
+      icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🍅</text></svg>',
+    });
+    if (state.notification) setTimeout(() => state.notification.close(), 5000);
+  } catch (e) { /* notif failed */ }
+}
+
+// --- event bindings ---
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchMode(btn.dataset.mode));
+});
+
+startBtn.addEventListener('click', startTimer);
+resetBtn.addEventListener('click', resetTimer);
+
+['workDuration', 'shortBreakDuration', 'longBreakDuration'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    if (!state.running) {
+      state.totalTime = getDuration();
+      state.timeLeft = state.totalTime;
+      updateModeUI();
+    }
+  });
+});
+
+// keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); startTimer(); }
+  if (e.code === 'KeyR') resetTimer();
+});
+
+// notification permission
+if ('Notification' in window) {
+  notifBar.classList.remove('hidden');
+  state.notifGranted = Notification.permission === 'granted';
+  if (state.notifGranted) { notifBar.classList.add('hidden'); }
+  enableNotif.addEventListener('click', async () => {
+    const result = await Notification.requestPermission();
+    state.notifGranted = result === 'granted';
+    if (state.notifGranted) notifBar.classList.add('hidden');
+  });
+}
+
+updateModeUI();
+</script>
+</body>
+</html>

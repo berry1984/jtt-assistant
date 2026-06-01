@@ -1,0 +1,1 @@
+web: cd TR账单自动生成 && python app.py

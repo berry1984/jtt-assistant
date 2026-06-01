@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TR发票 → 供应商模板 转换工具</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', sans-serif;
+    background: #f0f2f5; min-height: 100vh;
+    display: flex; justify-content: center; align-items: center; padding: 20px;
+  }
+  .container {
+    background: #fff; border-radius: 16px; padding: 48px;
+    width: 560px; max-width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,.08);
+  }
+  h1 { font-size: 24px; color: #1a1a2e; margin-bottom: 4px; text-align: center; }
+  .subtitle { font-size: 14px; color: #888; text-align: center; margin-bottom: 32px; }
+
+  .form-group { margin-bottom: 20px; }
+  label { display: block; font-size: 14px; font-weight: 600; color: #333; margin-bottom: 6px; }
+  label small { font-weight: 400; color: #999; }
+
+  .file-input-wrapper {
+    position: relative; border: 2px dashed #d0d5dd; border-radius: 10px;
+    padding: 24px; text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .file-input-wrapper:hover { border-color: #4f46e5; background: #f5f3ff; }
+  .file-input-wrapper.has-file { border-color: #4ecca3; background: #f0faf6; }
+  .file-input-wrapper input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .file-input-wrapper .icon { font-size: 32px; margin-bottom: 4px; }
+  .file-input-wrapper .hint { font-size: 13px; color: #999; }
+  .file-input-wrapper .filename { font-size: 13px; color: #4ecca3; font-weight: 600; display: none; word-break: break-all; }
+  .file-input-wrapper.has-file .hint { display: none; }
+  .file-input-wrapper.has-file .filename { display: block; }
+
+  .format-select {
+    width: 100%; padding: 12px 16px; border: 2px solid #d0d5dd; border-radius: 10px;
+    font-size: 15px; background: #fff; cursor: pointer; transition: border-color .2s;
+    appearance: auto; color: #333;
+  }
+  .format-select:hover, .format-select:focus {
+    border-color: #4f46e5; outline: none;
+  }
+
+  .format-desc {
+    margin-top: 8px; padding: 10px 14px; background: #f8f9ff; border-radius: 8px;
+    font-size: 13px; color: #555; line-height: 1.6; min-height: 20px;
+    border-left: 3px solid #4f46e5;
+  }
+
+  .btn {
+    width: 100%; padding: 14px; border: none; border-radius: 10px;
+    font-size: 16px; font-weight: 600; cursor: pointer; transition: .2s;
+    background: #4f46e5; color: #fff; margin-top: 8px;
+  }
+  .btn:hover { background: #4338ca; box-shadow: 0 4px 15px rgba(79,70,229,.3); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.loading { pointer-events: none; }
+  .btn.loading::after {
+    content: ''; width: 18px; height: 18px; border: 2px solid #fff;
+    border-top-color: transparent; border-radius: 50%;
+    display: inline-block; animation: spin .6s linear infinite;
+    margin-left: 8px; vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .flash { padding: 12px 16px; border-radius: 8px; font-size: 14px; margin-bottom: 20px; word-break: break-word; }
+  .flash-error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .flash-success { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+
+  .info-box {
+    background: #f8f9ff; border-radius: 10px; padding: 14px 18px;
+    margin-bottom: 24px; font-size: 13px; line-height: 1.6;
+    border: 1px solid #e0e7ff;
+  }
+  .info-box strong { color: #4f46e5; }
+
+  .footer { text-align: center; margin-top: 28px; font-size: 12px; color: #bbb; }
+  .footer a { color: #bbb; text-decoration: none; }
+  .footer a:hover { color: #4f46e5; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📄 TR发票 → 供应商模板</h1>
+  <p class="subtitle">上传 TR/思锐/赛诺吉发票，转换为供应商格式</p>
+
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for msg in messages %}
+        <div class="flash flash-error">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="info-box">
+    <strong>📌 支持格式：</strong>TR系统下单发票 · 思锐客户下单发票 · 赛诺吉发票<br>
+    <strong>📎 源文件要求：</strong>Sheet名 <code>Page1</code>，Row 1-16 头部，Row 18+ 数据行
+  </div>
+
+  <form method="post" action="/convert" enctype="multipart/form-data" id="convertForm">
+    <div class="form-group">
+      <label>TR 发票文件 <small>(.xlsx)</small></label>
+      <div class="file-input-wrapper" id="fileWrapper">
+        <input type="file" name="invoice_file" accept=".xlsx" required
+               onchange="updateFileLabel(this, 'fileWrapper')">
+        <div class="icon">📄</div>
+        <div class="hint">点击上传或拖拽 TR 发票文件</div>
+        <div class="filename"></div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>目标供应商模板</label>
+      <select name="target" class="format-select" id="formatSelect" onchange="updateFormatDesc()">
+        {% for key, label in targets.items() %}
+        <option value="{{ key }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <div class="format-desc" id="formatDesc"></div>
+    </div>
+
+    <button type="submit" class="btn" id="submitBtn">开始转换</button>
+  </form>
+
+  <div class="footer">
+    TR → 天图 / 航乐 发票转换工具
+  </div>
+</div>
+
+<script>
+function updateFileLabel(input, wrapperId) {
+  const wrapper = document.getElementById(wrapperId);
+  const filename = wrapper.querySelector('.filename');
+  if (input.files.length > 0) {
+    filename.textContent = '✅ ' + input.files[0].name;
+    wrapper.classList.add('has-file');
+  } else {
+    wrapper.classList.remove('has-file');
+  }
+}
+
+const FORMAT_DESCS = {
+  '天图': '📋 使用天图下单发票模板，支持仓代码下拉、带电/带磁、报关方式、数据验证等。输出为 .xlsx。',
+  '航乐-uk': '🇬🇧 航乐英国发票模板（GBP），包含地址/VAT/渠道/包税/物品属性等信息列。输出为 .xlsx。',
+  '航乐-eu': '🇪🇺 航乐欧洲发票模板（EUR），结构与英国版一致，货币为欧元。输出为 .xlsx。',
+};
+
+function updateFormatDesc() {
+  const sel = document.getElementById('formatSelect');
+  const desc = document.getElementById('formatDesc');
+  desc.textContent = FORMAT_DESCS[sel.value] || '';
+}
+
+// 初始加载显示第一个格式说明
+updateFormatDesc();
+
+document.getElementById('convertForm').addEventListener('submit', function() {
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 转换中...';
+  btn.classList.add('loading');
+});
+</script>
+</body>
+</html>
