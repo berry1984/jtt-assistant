@@ -208,8 +208,20 @@ def convert_to_tiantu(tr, output_path):
 
     # ── 头部 Row 1-28 ──
 
-    # B1: 服务 → 留空（保留下拉验证）
-    # B1 already has dropdown from template, keep empty
+    # B1: 服务 = TR 服务字段，同时确保该服务在 Sheet2 下拉列表中
+    service_name = tr.get('服务', '')
+    if service_name:
+        # 检查 Sheet2 中是否已有该服务，没有则追加
+        ws2 = wb['Sheet2']
+        found = False
+        for r in range(1, ws2.max_row + 1):
+            if ws2.cell(row=r, column=1).value == service_name:
+                found = True
+                break
+        if not found:
+            next_row = ws2.max_row + 1
+            ws2.cell(row=next_row, column=1).value = service_name
+    set_cell('B', 1, service_name, font_value)
 
     # B2: 仓库代码 = TR B4 (收件人姓名，如 YVR4/FTW1/POZ1/RFD2)
     wh_code = tr.get('收件人姓名', '')
