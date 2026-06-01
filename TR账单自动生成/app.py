@@ -68,6 +68,30 @@ def index():
 #  页脚
 # ═══════════════════════════════════════════════════════════
 
+@app.route('/debug_template', methods=['GET'])
+def debug_template():
+    """调试：查看模板文件信息"""
+    import os
+    from openpyxl import load_workbook
+    tpl_path = os.path.join(INVOICE_DIR, '天图单票专用模板20260601.xlsx')
+    info = {'status': 'unknown', 'path': tpl_path, 'exists': os.path.exists(tpl_path)}
+    if info['exists']:
+        info['size'] = os.path.getsize(tpl_path)
+        try:
+            wb = load_workbook(tpl_path, data_only=True)
+            info['sheet2_rows'] = wb['Sheet2'].max_row
+            # 前3条和后3条服务
+            ws2 = wb['Sheet2']
+            first3 = [ws2.cell(r, 1).value for r in range(1, 4)]
+            last3 = [ws2.cell(r, 1).value for r in range(info['sheet2_rows']-2, info['sheet2_rows']+1)]
+            info['first_3'] = first3
+            info['last_3'] = last3
+            wb.close()
+        except Exception as e:
+            info['error'] = str(e)
+    return info
+
+
 @app.route('/invoice', methods=['GET'])
 def invoice_page():
     return render_template('index.html', targets=TARGET_OPTIONS, active_tab='invoice')
