@@ -34,6 +34,7 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from io import BytesIO
 
 
@@ -432,7 +433,11 @@ def convert_to_tiantu(tr, output_path):
                 img = OpenpyxlImage(BytesIO(img_bytes))
                 img.width = 70
                 img.height = 70
-                ws.add_image(img, f'M{r}')
+                # 使用 TwoCellAnchor + editAs="twoCell" = "放置在单元格中"
+                _from = AnchorMarker(col=12, row=r - 1, colOff=0, rowOff=0)
+                _to = AnchorMarker(col=13, row=r, colOff=0, rowOff=0)
+                img.anchor = TwoCellAnchor(_from=_from, to=_to, editAs="twoCell")
+                ws._images.append(img)
             except:
                 pass
         # 也保留产品图片链接文本（如果有的话）
