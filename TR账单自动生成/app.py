@@ -16,8 +16,9 @@ import sys
 import tempfile
 import shutil
 import atexit
+import uuid
 from datetime import datetime, timedelta
-from flask import Flask, request, render_template, send_file, flash, redirect
+from flask import Flask, request, render_template, send_file, send_from_directory, flash, redirect
 
 # ── 模块路径 ──
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -196,6 +197,15 @@ def generate():
 #  功能2：TR发票 → 供应商模板 转换
 # ═══════════════════════════════════════════════════════════
 
+# 临时图片存储路径，用于 IMAGE() 公式引用
+TEMP_IMAGE_DIR = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_images')
+os.makedirs(TEMP_IMAGE_DIR, exist_ok=True)
+
+@app.route('/temp_images/<session_id>/<filename>')
+def serve_temp_image(session_id, filename):
+    """提供转换时提取的临时图片（IMAGE 公式引用）"""
+    return send_from_directory(os.path.join(TEMP_IMAGE_DIR, session_id), filename)
+
 @app.route('/invoice_convert', methods=['POST'])
 def invoice_convert():
     invoice_file = request.files.get('invoice_file')
@@ -216,13 +226,32 @@ def invoice_convert():
 
         tr = TRInvoice(invoice_path)
 
+        # ── 提取图片到临时目录（供 IMAGE() 公式以 HTTP URL 引用） ──
+        image_session_id = uuid.uuid4().hex[:12]
+        session_img_dir = os.path.join(TEMP_IMAGE_DIR, image_session_id)
+        os.makedirs(session_img_dir, exist_ok=True)
+
+        img_count = 0
+        for src_row, img_bytes in tr.images.items():
+            img_filename = f'image_tiantu_{img_count + 1}.png'
+            with open(os.path.join(session_img_dir, img_filename), 'wb') as f:
+                f.write(img_bytes)
+            img_count += 1
+
+        if img_count > 0:
+            # 构建服务器 URL 前缀
+            host_url = request.host_url.rstrip('/')
+            image_url_base = f'{host_url}/temp_images/{image_session_id}'
+        else:
+            image_url_base = None
+
         base_name = os.path.splitext(invoice_file.filename)[0]
         ext_map = {'天图': '天图', '航乐-uk': '航乐-UK', '航乐-eu': '航乐-EU'}
         output_name = f'{base_name}-{ext_map[target]}.xlsx'
         output_path = os.path.join(tmp_dir, output_name)
 
         if target == '天图':
-            ok = convert_to_tiantu(tr, output_path)
+            ok = convert_to_tiantu(tr, output_path, image_url_base=image_url_base)
         elif target == '航乐-uk':
             ok = convert_to_hangle(tr, output_path, region='uk')
         elif target == '航乐-eu':
