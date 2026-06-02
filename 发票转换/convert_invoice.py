@@ -566,7 +566,7 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     # ── 样式定义（匹配航乐模板样式）──
     thin_side = Side(style='thin')
     thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    val_font = Font(name='微软雅黑', size=10)
+    val_font = Font(name='微软雅黑', size=11)
     bold_font = Font(name='微软雅黑', size=10, bold=True)
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -585,50 +585,50 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     # ══════════════════════════════════════════════
 
     # ── Row 3: ADD / COUNTRY / SHIPMENT ID / AMAZON REF ──
-    # B3:E3 (merged) = ADD(收件地址) 值 — correct版本用 收件人姓名(仓库代码)
-    wcell(3, 2, tr.get('收件人姓名', ''), val_font)
+    # 注：不传font以保留模板原有格式（宋体红色等）
+    # B3:E3 (merged) = ADD(收件地址) 值
+    ws['B3'] = tr.get('收件人姓名', '')
     # G3 = COUNTRY 值
-    wcell(3, 7, country_code, val_font)
-    # H3:J3 (merged) = SHIPMENT ID 标签（保留模板标签，值不填或后续手动）
+    ws['G3'] = country_code
+    # H3:J3 (merged) = SHIPMENT ID 标签（保留模板标签，值不填）
     # K3:M3 (merged) = AMAZON REF 标签（保留模板标签）
 
     # ── Row 4: ZIP / COMPANY / TEL / 报关类型 / 交货仓库 ──
-    # B4 = ZIP CODE
-    wcell(4, 2, tr.get('收件人邮编', ''), val_font)
+    ws['B4'] = tr.get('收件人邮编', '')
     # D4:E4 (merged) = COMPANY
-    wcell(4, 4, tr.get('收件人公司', ''), val_font)
+    ws['D4'] = tr.get('收件人公司', '')
     # G4:H4 (merged) = TEL
-    wcell(4, 7, tr.get('收件人电话', ''), val_font)
+    ws['G4'] = tr.get('收件人电话', '')
     # I4:J4 (merged) = 报关类型标签（保留模板标签，值写到 Row5 I5）
     # K4:M4 (merged) = 交货仓库标签（保留模板标签，值写到 Row5 K5）
 
     # ── Row 5: CITY / ATTN / EMAIL / 报关退税 / 交货仓库 ──
-    wcell(5, 2, tr.get('收件人城市', ''), val_font)
+    ws['B5'] = tr.get('收件人城市', '')
     # D5:E5 (merged) = ATTN
-    wcell(5, 4, tr.get('收件人姓名', ''), val_font)
+    ws['D5'] = tr.get('收件人姓名', '')
     # G5:H5 (merged) = EMAIL
-    wcell(5, 7, tr.get('收件人邮箱', ''), val_font)
+    ws['G5'] = tr.get('收件人邮箱', '')
     # I5:J5 (merged) = 报关类型值
-    wcell(5, 9, tr.get('报关方式', ''), val_font)
+    ws['I5'] = tr.get('报关方式', '')
     # K5:M5 (merged) = 交货仓库值
-    wcell(5, 11, '', val_font)  # 交货仓库 — 按需填写
+    ws['K5'] = ''  # 按需填写
 
     # ── Row 7-10: VAT / 渠道 / 包税 / 物品属性 ──
     # B7:H7 = VAT公司名称/公司名称
-    wcell(7, 2, tr.get('VAT公司英文名', ''), val_font)
+    ws['B7'] = tr.get('VAT公司英文名', '')
     # B8:H8 = VAT号
-    wcell(8, 2, tr.get('VAT号', ''), val_font)
+    ws['B8'] = tr.get('VAT号', '')
     # B9:H9 = EORI号
-    wcell(9, 2, tr.get('EORI号', ''), val_font)
+    ws['B9'] = tr.get('EORI号', '')
     # B10:H10 = VAT注册地址
-    wcell(10, 2, tr.get('VAT注册地址', ''), val_font)
+    ws['B10'] = tr.get('VAT注册地址', '')
     # I7:K10 (merged) = 渠道（服务名）
-    wcell(7, 9, tr.get('服务', ''), val_font)
+    ws['I7'] = tr.get('服务', '')
     # L7:L10 (merged) = 是否包税
-    wcell(7, 12, tr.get('交税方式', ''), val_font)
-    # M7:M10 (merged) = 物品属性（从中文品名推断）
+    ws['L7'] = tr.get('交税方式', '')
+    # M7:M10 (merged) = 物品属性
     category = _guess_product_category(tr)
-    wcell(7, 13, category, val_font)
+    ws['M7'] = category
 
     # 收集待嵌入图片
     pending_images = {}
@@ -647,8 +647,12 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
             else:
                 cell.value = None
 
-    # 添加 PO Number 表头（模板不含，正确版本有此列）
-    ws['Y11'] = 'PO Number*\n（Reference ID）'
+    # 添加 PO Number 表头（模板不含，正确版本有此列）—— 匹配模板表头格式
+    y11_cell = ws['Y11']
+    y11_cell.value = 'PO Number*\n（Reference ID）'
+    y11_cell.font = Font(name='宋体', size=15, color='FFFF0000')
+    y11_cell.fill = PatternFill(patternType='solid', fgColor='FFFFFF00')
+    y11_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
     data_start = 12
     for i, dr in enumerate(tr.data_rows):
@@ -763,10 +767,11 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     # 合计行加粗+边框
     for c in range(1, 26):
         cell = ws.cell(row=total_row, column=c)
-        if cell.font and cell.font.name:
-            cell.font = Font(name=cell.font.name, size=10, bold=True)
-        else:
-            cell.font = bold_font
+        if cell.value is not None:
+            if cell.font and cell.font.name:
+                cell.font = Font(name=cell.font.name, size=11, bold=True)
+            else:
+                cell.font = Font(name='宋体', size=11, bold=True)
         cell.alignment = center_align
 
     # ── 保存 ──
