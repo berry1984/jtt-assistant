@@ -48,6 +48,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TIANTU_TEMPLATE = os.path.join(SCRIPT_DIR, '天图单票专用模板20260601.xlsx')
 HANGLE_UK_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 英国发票模板9.9更新.xls')
 HANGLE_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xls')
+HANGLE_UK_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 英国发票模板9.9更新.xlsx')
+HANGLE_EU_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xlsx')
 
 # TR发票列映射 (Row 17+ header)
 TR_COL = {
@@ -514,16 +516,28 @@ def convert_to_hangle(tr, output_path, region='uk'):
     """
     TR发票 → 航乐格式 (UK 或 EU)
 
-    输出 .xlsx 格式，布局和数据规则参照航乐模板。
+    基于实际模板 (.xlsx 转换版)，复制后填充数据。
+    保留模板的所有格式、合并单元格、渠道参考列表等。
     """
+    # ── 选择模板 ──
     if region == 'uk':
+        template_path = HANGLE_UK_TEMPLATE_XLSX
         currency_label = 'GBP'
-        currency_name = '英镑'
+        region_label = '英国'
     else:
+        template_path = HANGLE_EU_TEMPLATE_XLSX
         currency_label = 'EUR'
-        currency_name = '欧元'
+        region_label = '欧洲'
 
-    # ── 获取TR数据 ──
+    if not os.path.exists(template_path):
+        # 回退到旧版 .xls 路径提示
+        print(f'❌ 航乐{region_label}模板 (.xlsx) 不存在: {template_path}')
+        print(f'   请先运行: python3 convert_template_xls_to_xlsx.py')
+        return False
+
+    print(f'📄 航乐{region_label}模板: {template_path}')
+
+    # ── 获取 TR 数据 ──
     country = tr.get('收件人国家代码(二字代码)', '') or tr.get('收件人国家代码', '') or 'US'
     country_map = {
         'GB': 'UK', 'UK': 'UK', 'US': 'US', 'DE': 'DE', 'FR': 'FR',
@@ -534,32 +548,26 @@ def convert_to_hangle(tr, output_path, region='uk'):
     has_battery = tr.get('带电', '否')
     has_magnet = tr.get('带磁', '否')
 
-    # ── 创建 Workbook ──
-    wb = load_workbook(TIANTU_TEMPLATE)
-    for sn in wb.sheetnames:
-        del wb[sn]
-    ws = wb.create_sheet('Packing list装箱单发票')
+    # ── 解析箱号中的箱数（如 "FBA15LV645QTU000001-5" → 5 箱）──
+    import re
+    def parse_box_count(box_no):
+        if not box_no:
+            return 1
+        m = re.search(r'-(\d+)$', str(box_no))
+        return int(m.group(1)) if m else 1
 
-    # ── 样式定义 ──
+    # ── 复制模板 ──
+    shutil.copy(template_path, output_path)
+    wb = load_workbook(output_path)
+    ws = wb['Packing list装箱单发票']
+
+    # ── 样式定义（用于填入的数据）──
     thin_side = Side(style='thin')
     thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    normal_font = Font(name='微软雅黑', size=10)
+    data_font = Font(name='微软雅黑', size=10)
     bold_font = Font(name='微软雅黑', size=10, bold=True)
-    title_font = Font(name='微软雅黑', size=11, bold=True, color='FF0000')
-    total_font = Font(name='微软雅黑', size=10, bold=True)
-    note_font = Font(name='微软雅黑', size=9, color='808080')
-    header_fill = PatternFill(start_color='DAEEF3', end_color='DAEEF3', fill_type='solid')
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-    # ── 列宽 ──
-    col_widths = {'A':18,'B':16,'C':22,'D':12,'E':12,'F':16,'G':14,'H':14,'I':16,
-                  'J':14,'K':14,'L':14,'M':14,'N':12,'O':12,'P':18,'Q':8,'R':8,
-                  'S':10,'T':12,'U':14,'V':12,'W':20,'X':30}
-    for cl, w in col_widths.items():
-        ws.column_dimensions[cl].width = w
-
-    # ── 辅助：写单元格 ──
     def wcell(r, c, val, font=None, align=None, border=None, nf=None):
         cell = ws.cell(row=r, column=c)
         cell.value = val
@@ -569,219 +577,229 @@ def convert_to_hangle(tr, output_path, region='uk'):
         if nf: cell.number_format = nf
         return cell
 
-    # ──────────────────────────────────────────────
-    #  标题与说明行 (Row 1-2)
-    # ──────────────────────────────────────────────
-    ws.merge_cells('A1:M1')
-    title_text = 'Commerical Invoice（商业发票）&Packing list（装箱单）红色字体及标颜色部分必填'
-    wcell(1, 1, title_text, title_font)
+    # ══════════════════════════════════════════════
+    #  头部数据填充——模板已含标签，只需填值
+    # ══════════════════════════════════════════════
 
-    ws.merge_cells('A2:M2')
-    wcell(2, 1, '贵司需如实根据实际装箱货物填写清单，如遇海关查验，发现装箱单与实际货物不符，出现瞒报现象，产生责任由贵司承担，并承担罚款费用',
-          note_font, Alignment(horizontal='left', vertical='center', wrap_text=True))
+    # ── Row 3: ADD / COUNTRY / SHIPMENT ID / AMAZON REF ──
+    # B3:E3 (merged) = ADD(收件地址) 值 — correct版本用 收件人姓名(仓库代码)
+    ws['B3'] = tr.get('收件人姓名', '')
+    # G3 = COUNTRY 值
+    ws['G3'] = country_code
+    # H3:J3 (merged) = SHIPMENT ID 标签（保留模板标签，值不填或后续手动）
+    # K3:M3 (merged) = AMAZON REF 标签（保留模板标签）
 
-    # ──────────────────────────────────────────────
-    #  头部信息 (Row 3-9)
-    # ──────────────────────────────────────────────
-    label_font = bold_font
-    val_font = normal_font
+    # ── Row 4: ZIP / COMPANY / TEL / 报关类型 / 交货仓库 ──
+    # B4 = ZIP CODE
+    ws['B4'] = tr.get('收件人邮编', '')
+    # D4:E4 (merged) = COMPANY
+    ws['D4'] = tr.get('收件人公司', '')
+    # G4:H4 (merged) = TEL
+    ws['G4'] = tr.get('收件人电话', '')
+    # I4:J4 (merged) = 报关类型标签（保留模板标签，值写到 Row5 I5）
+    # K4:M4 (merged) = 交货仓库标签（保留模板标签，值写到 Row5 K5）
 
-    # 行结构: A=标签 B=值 C=标签 D=值 E=标签 F=值 G=标签 H=值 I=标签 J=值 ...
-    # Row 3: ADD / COUNTRY / SHIPMENT ID / AMAZON REF
-    header_fields_r3 = [
-        (1, 'ADD(收件地址)*：', 2, tr.get('收件人地址一', '')),
-        (5, 'COUNTRY 国家', 6, country_code),
-        (7, 'SHIPMENT ID（FBA货物编码）：', 8, tr.get('客户订单号', '')),
-        (10, 'AMAZON REFERENCE ID（亚马逊内部编码）：', 11, ''),
-    ]
-    for lab_col, lab, val_col, val in header_fields_r3:
-        wcell(3, lab_col, lab, label_font)
-        wcell(3, val_col, val, val_font)
+    # ── Row 5: CITY / ATTN / EMAIL / 报关退税 / 交货仓库 ──
+    ws['B5'] = tr.get('收件人城市', '')
+    # D5:E5 (merged) = ATTN
+    ws['D5'] = tr.get('收件人姓名', '')
+    # G5:H5 (merged) = EMAIL
+    ws['G5'] = tr.get('收件人邮箱', '')
+    # I5:J5 (merged) = 报关类型值
+    ws['I5'] = tr.get('报关方式', '')
+    # K5:M5 (merged) = 交货仓库值
+    ws['K5'] = ''  # 交货仓库 — 按需填写
 
-    # Row 4: ZIP / COMPANY / TEL / 报关类型 / 交货仓库
-    header_fields_r4 = [
-        (1, 'ZIP CODE（邮编）*：', 2, tr.get('收件人邮编', '')),
-        (3, 'COMPANY(收件公司)* ：', 4, tr.get('收件人公司', '')),
-        (5, 'TEL(收件人电话) ：', 6, tr.get('收件人电话', '')),
-        (8, '报关类型（委托/单证）：必填', 9, tr.get('报关方式', '委托')),
-        (10, '交货仓库', 11, tr.get('收件人姓名', '')),
-    ]
-    for lab_col, lab, val_col, val in header_fields_r4:
-        wcell(4, lab_col, lab, label_font)
-        wcell(4, val_col, val, val_font)
+    # ── Row 7-10: VAT / 渠道 / 包税 / 物品属性 ──
+    # B7:H7 = VAT公司名称/公司名称
+    ws['B7'] = tr.get('VAT公司英文名', '')
+    # B8:H8 = VAT号
+    ws['B8'] = tr.get('VAT号', '')
+    # B9:H9 = EORI号
+    ws['B9'] = tr.get('EORI号', '')
+    # B10:H10 = VAT注册地址
+    ws['B10'] = tr.get('VAT注册地址', '')
+    # I7:K10 (merged) = 渠道（服务名）
+    ws['I7'] = tr.get('服务', '')
+    # L7:L10 (merged) = 是否包税
+    ws['L7'] = tr.get('交税方式', '')
+    # M7:M10 (merged) = 物品属性（从中文品名推断）
+    category = _guess_product_category(tr)
+    ws['M7'] = category
 
-    # Row 5: CITY / ATTN / EMAIL
-    header_fields_r5 = [
-        (1, 'CITY*(城市名)：', 2, tr.get('收件人城市', '')),
-        (3, 'ATTN(收件人)  ：', 4, tr.get('收件人姓名', '')),
-        (5, 'EMAIL*（邮箱）：', 6, tr.get('收件人邮箱', '')),
-    ]
-    for lab_col, lab, val_col, val in header_fields_r5:
-        wcell(5, lab_col, lab, label_font)
-        wcell(5, val_col, val, val_font)
+    # ══════════════════════════════════════════════
+    #  数据行 (Row 12+)
+    # ══════════════════════════════════════════════
 
-    # Row 6-9: VAT & 渠道信息 (use pairs, no full-row merges)
-    vat_label = 'VAT公司名称*' if region == 'uk' else '公司名称*'
-    wcell(6, 1, vat_label, label_font)
-    wcell(6, 2, tr.get('VAT公司英文名', ''), val_font)
-    wcell(7, 1, 'VAT号*', label_font)
-    wcell(7, 2, tr.get('VAT号', ''), val_font)
-    wcell(8, 1, 'EORI号*', label_font)
-    wcell(8, 2, tr.get('EORI号', ''), val_font)
-    wcell(9, 1, 'VAT公司注册地址*', label_font)
-    wcell(9, 2, tr.get('VAT注册地址', ''), val_font)
+    # 清空模板数据区域 (row 12-23)
+    for r in range(12, 50):
+        for c in range(1, 30):
+            cell = ws.cell(row=r, column=c)
+            # 保留公式提示文字（合计行标签）
+            if r == 24 and c == 3 and str(cell.value or '').strip() == 'Total No.of Boxes and weight':
+                cell.value = None
+            else:
+                cell.value = None
 
-    # Row 6 额外: 渠道 / 是否包税 / 物品属性
-    attrs = []
-    if tr.get('带电', '') == '是': attrs.append('带电')
-    if tr.get('带磁', '') == '是': attrs.append('带磁')
-    if tr.get('液体', '') == '是': attrs.append('液体')
-    if tr.get('粉末', '') == '是': attrs.append('粉末')
-    if tr.get('危险品', '') == '是': attrs.append('危险品')
-    attr_str = ','.join(attrs) if attrs else '普货'
+    # 添加 PO Number 表头（模板不含，正确版本有此列）
+    ws['Y11'] = 'PO Number*\n（Reference ID）'
 
-    wcell(6, 8, '渠道：', label_font)
-    wcell(6, 9, tr.get('服务', ''), val_font)
-    wcell(6, 11, '是否包税：', label_font)
-    wcell(6, 12, tr.get('交税方式', ''), val_font)
-    wcell(6, 13, '物品属性', label_font)
-    wcell(6, 14, attr_str, val_font)
-
-    # ──────────────────────────────────────────────
-    #  列标题 Row 11
-    # ──────────────────────────────────────────────
-    col_headers = [
-        (1, 'Box No.\nFBA箱号'), (2, '品名（中文）'), (3, '品名（英文)'),
-        (4, '材质\n（中文）'), (5, '材质\n（英文）'),
-        (6, '海关编码\n（十位数）'), (7, '型号'), (8, '品牌'),
-        (9, '产品用途\n（英文）'), (10, '*Quantity (pcs)\n单箱数量'),
-        (11, '*Quantity (pcs)\n总数量'), (12, 'Net Weight\n单个产品净重'),
-        (13, f'Gross weight(kg)\n实重'),
-        (14, f'单价\n({currency_label})'),
-        (15, f'总价\n({currency_label})'),
-        (16, 'Size (cm)\n尺寸（长宽高）'),
-        (19, '材重'), (20, 'CBM(M3)\n方数'),
-        (21, '是否带电\n（锂电or干电池）*'), (22, '是否带磁*'),
-        (23, '产品图片'), (24, '产品销售链接'),
-    ]
-    for c, label in col_headers:
-        wcell(11, c, label, Font(name='微软雅黑', size=10, bold=True),
-              center_align, thin_border)
-        ws.cell(row=11, column=c).fill = header_fill
-
-    # ──────────────────────────────────────────────
-    #  数据行 (Row 12-23)
-    # ──────────────────────────────────────────────
-    num_rows = min(len(tr.data_rows), 12)
-    for i, dr in enumerate(tr.data_rows[:num_rows]):
-        r = 12 + i
+    data_start = 12
+    for i, dr in enumerate(tr.data_rows):
+        r = data_start + i
         ws.row_dimensions[r].height = 30
+
         qty = dr['I'] or 0
         box_wt = dr['B'] or 0
         unit_price = dr['H'] or 0
+        box_count = parse_box_count(dr['A'])
+        total_qty = qty * box_count
+
+        # 尺寸 — 取整（匹配正确版本做法）
+        length_cm = int(dr['C']) if dr['C'] else 0
+        width_cm = int(dr['D']) if dr['D'] else 0
+        height_cm = int(dr['E']) if dr['E'] else 0
+
+        # 材重除数：欧洲 6000，英国 5000
+        vol_div = 6000 if region == 'eu' else 5000
+        raw_vol_wt = (length_cm * width_cm * height_cm / vol_div) if length_cm and width_cm and height_cm else None
+        raw_cbm = (length_cm * width_cm * height_cm / 1000000) if length_cm and width_cm and height_cm else None
+        # 净重 = 实重 / 单箱数量（不是总数量）
+        net_wt = round(box_wt / qty, 4) if box_wt and qty else None
 
         data = {
-            1: dr['A'],                                          # A: Box No
-            2: dr['G'],                                          # B: 品名中文
-            3: dr['F'],                                          # C: 品名英文
-            4: dr['J'] or '',                                    # D: 材质中文
-            5: dr['J'] or '',                                    # E: 材质英文
-            6: str(dr['K']) if dr['K'] is not None else '',      # F: 海关编码
-            7: str(dr['N']) if dr['N'] else '',                  # G: 型号
-            8: dr['M'] or '',                                    # H: 品牌
-            9: dr['L'] or '',                                    # I: 用途
-            10: qty,                                             # J: 单箱数量
-            11: qty,                                             # K: 总数量
-            12: round(box_wt / qty, 3) if qty > 0 else '',       # L: 净重
-            13: box_wt if box_wt else '',                        # M: 实重
-            14: unit_price,                                      # N: 单价
-            15: round(unit_price * qty, 2),                      # O: 总价
-            16: f'{dr["C"] or 0}*{dr["D"] or 0}*{dr["E"] or 0}',# P: 尺寸
-            19: round(dr['C']*dr['D']*dr['E']/5000, 1) if dr['C'] and dr['D'] and dr['E'] else '',  # S: 材重
-            20: round(dr['C']*dr['D']*dr['E']/1000000, 4) if dr['C'] and dr['D'] and dr['E'] else '',  # T: CBM
-            21: '是' if has_battery == '是' else '否',           # U: 带电
-            22: '是' if has_magnet == '是' else '否',            # V: 带磁
-            23: dr.get('Q', '') or '',                           # W: 图片
-            24: dr['O'] if dr['O'] else '',                      # X: 链接
+            1: str(dr['A']) if dr['A'] is not None else '',                      # A: Box No
+            2: str(dr['G']) if dr['G'] else '',                                  # B: 品名中文
+            3: str(dr['F']) if dr['F'] else '',                                  # C: 品名英文
+            4: str(dr['J']) if dr['J'] else '',                                  # D: 材质中文
+            5: str(dr['J']) if dr['J'] else '',                                  # E: 材质英文
+            6: str(int(dr['K'])) if dr['K'] is not None else '',                 # F: 海关编码
+            7: str(dr['N']) if dr['N'] else '无',                                # G: 型号
+            8: str(dr['M']) if dr['M'] else '无品牌',                            # H: 品牌
+            9: str(dr['L']) if dr['L'] else '',                                  # I: 用途
+            10: qty,                                                             # J: 单箱数量
+            11: total_qty,                                                       # K: 总数量
+            12: net_wt,                                                          # L: 净重
+            13: box_wt,                                                          # M: 实重
+            14: unit_price,                                                      # N: 单价
+            15: round(unit_price * total_qty, 2),                                # O: 总价
+            16: length_cm,                                                       # P: 长
+            17: width_cm,                                                        # Q: 宽
+            18: height_cm,                                                       # R: 高
+            19: raw_vol_wt,                                                       # S: 材重
+            20: raw_cbm,                                                          # T: CBM
+            21: '是' if has_battery == '是' else '否',                            # U: 是否带电
+            22: '是' if has_magnet == '是' else '否',                             # V: 是否带磁
+            23: str(dr.get('Q', '') or ''),                                      # W: 产品图片
+            24: str(dr['O']) if dr['O'] else '',                                 # X: 链接
+            25: str(dr.get('V', '') or ''),                                      # Y: PO Number
         }
 
-        nf_map = {10: '0', 11: '0', 12: '0.000', 13: '0.0', 14: '0.00', 15: '0.00',
-                  19: '0.0', 20: '0.0000'}
+        nf_map = {10: '0', 11: '0', 12: '0.0000', 13: '0.0',
+                  14: '0.00', 15: '0.00', 19: '0.000', 20: '0.000000'}
 
-        for c, val in data.items():
-            cell = wcell(r, c, val, normal_font, center_align, thin_border,
-                         nf_map.get(c, None))
+        for col_idx, val in data.items():
+            if val is None or val == '':
+                continue
+            wcell(r, col_idx, val, data_font, center_align, thin_border,
+                  nf_map.get(col_idx, None))
 
-    # 空数据行保留边框
-    for r in range(12, 24):
-        for c in range(1, 25):
-            cell = ws.cell(row=r, column=c)
-            if not cell.border or cell.border == Border():
-                cell.border = thin_border
+    num_data = len(tr.data_rows)
 
-    # ──────────────────────────────────────────────
-    #  合计行 Row 24
-    # ──────────────────────────────────────────────
+    # ══════════════════════════════════════════════
+    #  合计行
+    # ══════════════════════════════════════════════
+    total_row = data_start + num_data + 3  # 空3行间隙
+
+    # 计算合计
+    total_qty = sum((dr['I'] or 0) * parse_box_count(dr['A']) for dr in tr.data_rows)
     total_weight = sum(dr['B'] or 0 for dr in tr.data_rows)
-    total_qty = sum(dr['I'] or 0 for dr in tr.data_rows)
-    total_price = sum((dr['H'] or 0) * (dr['I'] or 0) for dr in tr.data_rows)
-    total_vol_wt = round(sum(
-        (dr.get('C') or 0) * (dr.get('D') or 0) * (dr.get('E') or 0) / 5000
-        for dr in tr.data_rows if dr.get('C') and dr.get('D') and dr.get('E')
-    ), 1) if any(dr.get('C') and dr.get('D') and dr.get('E') for dr in tr.data_rows) else 0
-    total_cbm = round(sum(
-        (dr.get('C') or 0) * (dr.get('D') or 0) * (dr.get('E') or 0) / 1000000
-        for dr in tr.data_rows if dr.get('C') and dr.get('D') and dr.get('E')
-    ), 4) if any(dr.get('C') and dr.get('D') and dr.get('E') for dr in tr.data_rows) else 0
+    total_price = sum((dr['H'] or 0) * (dr['I'] or 0) * parse_box_count(dr['A']) for dr in tr.data_rows)
 
-    wcell(24, 1, '', total_font, center_align, thin_border)
-    ws.merge_cells('C24:E24')
-    wcell(24, 3, 'Total No.of Boxes and weight', total_font, center_align, thin_border)
-    wcell(24, 11, total_qty, total_font, center_align, thin_border, '0')
-    wcell(24, 13, total_weight, total_font, center_align, thin_border, '0.0')
-    wcell(24, 15, total_price, total_font, center_align, thin_border, '0.00')
-    wcell(24, 19, total_vol_wt, total_font, center_align, thin_border, '0.0')
-    wcell(24, 20, total_cbm, total_font, center_align, thin_border, '0.0000')
-    for c in range(1, 25):
-        cell = ws.cell(row=24, column=c)
-        cell.font = total_font
+    vol_div = 6000 if region == 'eu' else 5000
+    vol_wts = []
+    cbms = []
+    for dr in tr.data_rows:
+        l = int(dr['C']) if dr['C'] else 0
+        w = int(dr['D']) if dr['D'] else 0
+        h = int(dr['E']) if dr['E'] else 0
+        if l and w and h:
+            vol_wts.append(l * w * h / vol_div)
+            cbms.append(l * w * h / 1000000)
+    total_vol_wt = round(sum(vol_wts), 3) if vol_wts else 0
+    total_cbm = round(sum(cbms), 6) if cbms else 0
+
+    # 写入合计
+    ws.merge_cells(start_row=total_row, start_column=3, end_row=total_row, end_column=5)
+    ws.cell(row=total_row, column=3).value = 'Total No.of Boxes and weight'
+
+    total_fields = {
+        11: (total_qty, '0'),
+        13: (total_weight, '0.0'),
+        15: (total_price, '0.00'),
+        19: (total_vol_wt, '0.000'),
+        20: (total_cbm, '0.000000'),
+    }
+    for col_idx, (val, nf) in total_fields.items():
+        cell = ws.cell(row=total_row, column=col_idx)
+        cell.value = val
+        cell.font = bold_font
         cell.alignment = center_align
-        cell.border = thin_border
+        cell.number_format = nf
 
-    # ──────────────────────────────────────────────
-    #  渠道参考列表 Row 27+ (来自原模板)
-    # ──────────────────────────────────────────────
-    channel_list = []
-    if region == 'uk':
-        channel_list = [
-            '英国卡航包税（限时达）', '英国卡航不包税（限时达）', '英国卡航包税', '英国卡航不包税',
-            '英国海运包税', '英国海运不包税', '英国海运不包税（卡派）',
-            '欧洲卡航包税', '欧洲海运包税', '欧洲海运不包税（递延）', '欧洲铁路包税',
-            '英国空运经济线包税', '英国空运经济线不包税',
-            '英国空运快线包税', '英国空运快线不包税',
-            '英国空运（限时达）包税', '英国空运（限时达）不包税',
-            '英国空运包税（带电/化妆品）', '英国空运不包税（带电/化妆品）',
-            '欧洲空运包税（普货）', '欧洲空运包税（带电/化妆品）',
-        ]
-    else:
-        channel_list = [
-            'FBA欧洲卡航DPD', '私人地址欧洲卡航DPD', 'FBA欧洲卡航UPS', '私人地址欧洲卡航UPS',
-            '欧洲卡航FBA专仓卡派（kg）', '欧洲卡航万邑通/谷仓/4PX专仓卡派（kg）', '欧洲卡航卡派', '欧卡海外仓服务',
-            'FBA欧洲海运DPD', '私人地址欧洲海运DPD', 'FBA欧洲海运UPS', '私人地址欧洲海运UPS',
-            '欧洲海运FBA专仓卡派（kg）', '欧洲海运万邑通/谷仓/4PX专仓卡派（kg）', '欧洲海运卡派', '欧海海外仓服务',
-            'FBA欧洲铁路DPD', '私人地址欧洲铁路DPD', 'FBA欧洲铁路UPS', '私人地址欧洲铁路UPS',
-            '欧洲铁路FBA专仓卡派（kg）', '欧洲铁路万邑通/谷仓/4PX专仓卡派（kg）', '欧洲铁路卡派', '欧铁海外仓服务',
-        ]
-    wcell(27, 1, '【渠道参考列表】', bold_font)
-    for i, ch in enumerate(channel_list):
-        wcell(27 + i, 2, ch, normal_font)
+    # 合计行加粗+边框
+    for c in range(1, 26):
+        cell = ws.cell(row=total_row, column=c)
+        if cell.font and cell.font.name:
+            cell.font = Font(name=cell.font.name, size=10, bold=True)
+        else:
+            cell.font = bold_font
+        cell.alignment = center_align
 
     # ── 保存 ──
     wb.save(output_path)
-    region_label = '英国' if region == 'uk' else '欧洲'
     print(f'✅ 航乐{region_label}发票已生成: {os.path.basename(output_path)}')
-    print(f'   数据: {num_rows} 箱, 总价: {total_price:.2f} {currency_label}')
+    print(f'   数据: {num_data} 行, 总件数: {total_qty}, 总价: {total_price:.2f} {currency_label}')
     return True
+
+
+def _guess_product_category(tr):
+    """
+    从 TR 发票的多个产品中文品名推断物品属性。
+    例如所有产品含"灯" → "灯类"，否则合并或不填。
+    """
+    import re
+    all_names = [dr.get('G', '') or '' for dr in tr.data_rows if dr.get('G')]
+    if not all_names:
+        return ''
+
+    # 常见分类关键词
+    keywords = {
+        '灯类': ['灯', '照明'],
+        '服装': ['衣', '服', '裤', '裙', '袜', '帽', '鞋'],
+        '电子': ['电子', '电', '机', '器', '充电', '电池', '线'],
+        '家居': ['家具', '桌', '椅', '凳', '架', '柜', '收纳'],
+        '玩具': ['玩具', '玩'],
+        '箱包': ['包', '箱', '袋', '背包'],
+        '美容': ['美容', '化妆', '护肤', '梳'],
+    }
+
+    scores = {}
+    for cat, kws in keywords.items():
+        score = 0
+        for name in all_names:
+            for kw in kws:
+                if kw in name:
+                    score += 1
+                    break
+        if score > 0:
+            scores[cat] = score
+
+    if scores:
+        best = max(scores, key=scores.get)
+        return best
+
+    return '普货'
 
 
 # ═══════════════════════════════════════════════════════════════
