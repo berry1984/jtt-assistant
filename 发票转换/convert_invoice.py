@@ -25,6 +25,9 @@ import os
 import re
 import shutil
 import argparse
+import zipfile
+import tempfile
+import xml.etree.ElementTree as ET
 from copy import copy
 from datetime import datetime
 
@@ -33,8 +36,6 @@ from openpyxl.styles import (
     Font, Alignment, Border, Side, PatternFill
 )
 from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as OpenpyxlImage
-from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 from io import BytesIO
 
 
@@ -377,6 +378,9 @@ def convert_to_tiantu(tr, output_path):
             cell.value = None
             cell.border = Border()
 
+    # 收集待嵌入的图片 (cell_ref → image_bytes)
+    pending_images = {}
+
     # 写入数据
     data_start_row = 30
     for i, dr in enumerate(tr.data_rows):
@@ -429,18 +433,10 @@ def convert_to_tiantu(tr, output_path):
         src_row = dr.get('_row')
         img_bytes = tr.images.get(src_row) if src_row else None
         if img_bytes:
-            try:
-                img = OpenpyxlImage(BytesIO(img_bytes))
-                img.width = 70
-                img.height = 70
-                # 使用 TwoCellAnchor + editAs="twoCell" = "放置在单元格中"
-                _from = AnchorMarker(col=12, row=r - 1, colOff=0, rowOff=0)
-                _to = AnchorMarker(col=13, row=r, colOff=0, rowOff=0)
-                img.anchor = TwoCellAnchor(_from=_from, to=_to, editAs="twoCell")
-                ws._images.append(img)
-            except:
-                pass
-        # 也保留产品图片链接文本（如果有的话）
+            # 收集图片，保存后会通过 IMAGE() 公式嵌入单元格
+            pending_images[f'M{r}'] = img_bytes
+            # 占位文本（Excel 365 会以 IMAGE 公式结果覆盖显示）
+            set_cell('M', r, '[图片]', font_data, center_align, thin_border)
         q_val = dr.get('Q', '') or ''
         if q_val and not img_bytes:
             set_cell('M', r, q_val, font_data, center_align, thin_border)
@@ -494,8 +490,15 @@ def convert_to_tiantu(tr, output_path):
 
     # ── 保存 ──
     wb.save(output_path)
+
+    # 后处理：将图片嵌入为单元格 IMAGE() 公式（Excel 365 "放置在单元格中"）
+    if pending_images:
+        _embed_images_as_cell_images(output_path, pending_images)
+
     print(f'✅ 天图发票已生成: {os.path.basename(output_path)}')
     print(f'   数据: {num_data_rows} 行, 合计: {total_qty} 件, ${total_value:.2f}')
+    if pending_images:
+        print(f'   嵌入图片: {len(pending_images)} 张')
     return True
 
 
@@ -833,6 +836,165 @@ def batch_convert(input_dir, output_dir, target='天图'):
             print(f'❌ 转换失败 {fn}: {e}')
 
     print(f'\n📊 完成: {success}/{len(files)} 文件已转换')
+
+
+# ═══════════════════════════════════════════════════════════════
+#  图片嵌入后处理 — 将图片嵌入为单元格 IMAGE() 公式
+#  (Excel 365 "Place in Cell" / "放置在单元格中")
+# ═══════════════════════════════════════════════════════════════
+
+def _embed_images_as_cell_images(xlsx_path, cell_image_map):
+    """
+    后处理 xlsx 文件，将图片嵌入为单元格值。
+
+    原理：openpyxl 只能将图片添加为 Drawing（浮动对象），无法实现
+    Excel 365 的"放置在单元格中"。本函数直接在 ZIP/XML 层面操作：
+      1. 将图片写入 xl/media/
+      2. 在对应单元格写入 _xlfn.IMAGE() 公式引用嵌入图片
+      3. 补充 Content_Types + 关系声明
+
+    cell_image_map: dict { cell_ref → image_bytes }
+                    例: {'M30': b'...', 'M31': b'...'}
+    """
+    if not cell_image_map:
+        return
+
+    ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+    NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        # ── 1. 解压 xlsx ──
+        with zipfile.ZipFile(xlsx_path, 'r') as z:
+            z.extractall(tmp_dir)
+
+        # ── 2. 写入图片到 xl/media/ ──
+        media_dir = os.path.join(tmp_dir, 'xl', 'media')
+        os.makedirs(media_dir, exist_ok=True)
+        sorted_refs = list(cell_image_map.items())
+
+        # 写图片文件
+        img_filenames = {}
+        for i, (cell_ref, img_bytes) in enumerate(sorted_refs):
+            img_filename = f'image_tiantu_{i+1}.png'
+            with open(os.path.join(media_dir, img_filename), 'wb') as f:
+                f.write(img_bytes)
+            img_filenames[cell_ref] = img_filename
+
+        # ── 3. 修改 sheet1.xml：将图片单元格改为 IMAGE 公式 ──
+        sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
+        if not os.path.exists(sheet_path):
+            print(f'  ⚠️  sheet1.xml 不存在，跳过图片嵌入')
+            return
+
+        tree = ET.parse(sheet_path)
+        root = tree.getroot()
+
+        # 收集所有 <c> 元素，找到要修改的单元格
+        for cell_ref, img_bytes in sorted_refs:
+            img_filename = img_filenames[cell_ref]
+            # 查找匹配的单元格
+            cell = root.find(f'.//{{{NS_S}}}c[@r="{cell_ref}"]')
+            if cell is not None:
+                # 删除原有内容（<is>inlineStr</is> 或 <v>value</v>）
+                for child in list(cell):
+                    cell.remove(child)
+                # 添加 IMAGE 公式（不带 =，OpenXML 规范）
+                f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
+                f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
+                # 移除 t 属性（不再是 inlineStr）
+                if 't' in cell.attrib:
+                    del cell.attrib['t']
+            else:
+                # 单元格不存在（不应发生，但以防万一）
+                print(f'  ⚠️  未找到单元格 {cell_ref}')
+
+        tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
+
+        # ── 4. 补充 Content_Types ──
+        ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
+        if os.path.exists(ct_path):
+            ct_tree = ET.parse(ct_path)
+            ct_root = ct_tree.getroot()
+            # 检查是否已声明 PNG
+            exists = False
+            for default in ct_root.findall(f'{{{NS_CT}}}Default'):
+                if default.get('Extension') == 'png':
+                    exists = True
+                    break
+            if not exists:
+                png_default = ET.SubElement(ct_root, f'{{{NS_CT}}}Default')
+                png_default.set('Extension', 'png')
+                png_default.set('ContentType', 'image/png')
+            ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
+
+        # ── 5. 添加 sheet 到 media 的关系（IMAGE 公式需要） ──
+        sheet_rels_dir = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
+        os.makedirs(sheet_rels_dir, exist_ok=True)
+        rels_path = os.path.join(sheet_rels_dir, 'sheet1.xml.rels')
+
+        # 找现有最大 rId
+        next_rId = 1
+        existing_rels = {}
+        if os.path.exists(rels_path):
+            rels_tree = ET.parse(rels_path)
+            rels_root = rels_tree.getroot()
+            for rel_elem in rels_root:
+                rid = rel_elem.get('Id', '')
+                if rid.startswith('rId'):
+                    try:
+                        num = int(rid[3:])
+                        next_rId = max(next_rId, num + 1)
+                    except:
+                        pass
+                existing_rels[rid] = rel_elem
+        else:
+            # 创建新 rels 文件
+            rels_root = ET.Element('Relationships')
+            rels_root.set('xmlns', NS_R)
+
+        # 为每张图片添加关系
+        existing_targets = set()
+        for rid, elem in existing_rels.items():
+            tgt = elem.get('Target', '')
+            existing_targets.add(tgt)
+
+        for cell_ref, img_bytes in sorted_refs:
+            img_filename = img_filenames[cell_ref]
+            rel_target = f'../media/{img_filename}'
+            if rel_target in existing_targets:
+                continue
+            rel_elem = ET.SubElement(rels_root, 'Relationship')
+            rel_elem.set('Id', f'rId{next_rId}')
+            rel_elem.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image')
+            rel_elem.set('Target', rel_target)
+            existing_targets.add(rel_target)
+            next_rId += 1
+
+        # 写入 rels
+        rels_tree = ET.ElementTree(rels_root)
+        rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
+
+        # ── 6. 重新打包为 xlsx ──
+        final_path = xlsx_path + '.tmp'
+        with zipfile.ZipFile(final_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for dirpath, dirnames, filenames in os.walk(tmp_dir):
+                for fn in filenames:
+                    full_path = os.path.join(dirpath, fn)
+                    arcname = os.path.relpath(full_path, tmp_dir)
+                    zout.write(full_path, arcname)
+
+        shutil.move(final_path, xlsx_path)
+        print(f'  📷 已嵌入 {len(cell_image_map)} 张图片到单元格（IMAGE 公式）')
+
+    except Exception as e:
+        print(f'  ⚠️  图片嵌入后处理出错: {e}')
+        import traceback
+        traceback.print_exc()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ═══════════════════════════════════════════════════════════════
