@@ -246,16 +246,30 @@ def invoice_convert():
             image_url_base = None
 
         base_name = os.path.splitext(invoice_file.filename)[0]
-        ext_map = {'天图': '天图', '航乐-uk': '航乐-UK', '航乐-eu': '航乐-EU'}
-        output_name = f'{base_name}-{ext_map[target]}.xlsx'
+
+        # 文件名：航乐按 "客户名称 订单号 欧洲/英国发票.xlsx" 格式
+        if target.startswith('航乐'):
+            import re
+            customer = ''
+            m = re.search(r'（(.+?)发票）', base_name)
+            if m:
+                customer = m.group(1)
+            order_no = tr.get('客户订单号', '') or ''
+            region_label = '欧洲' if target == '航乐-eu' else '英国'
+            output_name = f'{customer} {order_no} {region_label}发票.xlsx'.strip()
+            if output_name.startswith(' '):
+                output_name = output_name.lstrip()
+        else:
+            output_name = f'{base_name}-天图.xlsx'
+
         output_path = os.path.join(tmp_dir, output_name)
 
         if target == '天图':
             ok = convert_to_tiantu(tr, output_path, image_url_base=image_url_base)
         elif target == '航乐-uk':
-            ok = convert_to_hangle(tr, output_path, region='uk')
+            ok = convert_to_hangle(tr, output_path, region='uk', image_url_base=image_url_base)
         elif target == '航乐-eu':
-            ok = convert_to_hangle(tr, output_path, region='eu')
+            ok = convert_to_hangle(tr, output_path, region='eu', image_url_base=image_url_base)
 
         if not ok:
             flash('转换失败，请检查源文件格式')

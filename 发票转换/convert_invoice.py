@@ -512,12 +512,14 @@ def convert_to_tiantu(tr, output_path, image_url_base=None):
 #  3. 航乐 转换 (通用)
 # ═══════════════════════════════════════════════════════════════
 
-def convert_to_hangle(tr, output_path, region='uk'):
+def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     """
     TR发票 → 航乐格式 (UK 或 EU)
 
     基于实际模板 (.xlsx 转换版)，复制后填充数据。
     保留模板的所有格式、合并单元格、渠道参考列表等。
+
+    image_url_base: 如果提供，则嵌入 IMAGE() 公式实现"放置在单元格中"图片效果。
     """
     # ── 选择模板 ──
     if region == 'uk':
@@ -561,12 +563,13 @@ def convert_to_hangle(tr, output_path, region='uk'):
     wb = load_workbook(output_path)
     ws = wb['Packing list装箱单发票']
 
-    # ── 样式定义（用于填入的数据）──
+    # ── 样式定义（匹配航乐模板样式）──
     thin_side = Side(style='thin')
     thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-    data_font = Font(name='微软雅黑', size=10)
+    val_font = Font(name='微软雅黑', size=10)
     bold_font = Font(name='微软雅黑', size=10, bold=True)
     center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_align = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
     def wcell(r, c, val, font=None, align=None, border=None, nf=None):
         cell = ws.cell(row=r, column=c)
@@ -578,54 +581,57 @@ def convert_to_hangle(tr, output_path, region='uk'):
         return cell
 
     # ══════════════════════════════════════════════
-    #  头部数据填充——模板已含标签，只需填值
+    #  头部数据填充——模板已含标签，只需填值并匹配格式
     # ══════════════════════════════════════════════
 
     # ── Row 3: ADD / COUNTRY / SHIPMENT ID / AMAZON REF ──
     # B3:E3 (merged) = ADD(收件地址) 值 — correct版本用 收件人姓名(仓库代码)
-    ws['B3'] = tr.get('收件人姓名', '')
+    wcell(3, 2, tr.get('收件人姓名', ''), val_font)
     # G3 = COUNTRY 值
-    ws['G3'] = country_code
+    wcell(3, 7, country_code, val_font)
     # H3:J3 (merged) = SHIPMENT ID 标签（保留模板标签，值不填或后续手动）
     # K3:M3 (merged) = AMAZON REF 标签（保留模板标签）
 
     # ── Row 4: ZIP / COMPANY / TEL / 报关类型 / 交货仓库 ──
     # B4 = ZIP CODE
-    ws['B4'] = tr.get('收件人邮编', '')
+    wcell(4, 2, tr.get('收件人邮编', ''), val_font)
     # D4:E4 (merged) = COMPANY
-    ws['D4'] = tr.get('收件人公司', '')
+    wcell(4, 4, tr.get('收件人公司', ''), val_font)
     # G4:H4 (merged) = TEL
-    ws['G4'] = tr.get('收件人电话', '')
+    wcell(4, 7, tr.get('收件人电话', ''), val_font)
     # I4:J4 (merged) = 报关类型标签（保留模板标签，值写到 Row5 I5）
     # K4:M4 (merged) = 交货仓库标签（保留模板标签，值写到 Row5 K5）
 
     # ── Row 5: CITY / ATTN / EMAIL / 报关退税 / 交货仓库 ──
-    ws['B5'] = tr.get('收件人城市', '')
+    wcell(5, 2, tr.get('收件人城市', ''), val_font)
     # D5:E5 (merged) = ATTN
-    ws['D5'] = tr.get('收件人姓名', '')
+    wcell(5, 4, tr.get('收件人姓名', ''), val_font)
     # G5:H5 (merged) = EMAIL
-    ws['G5'] = tr.get('收件人邮箱', '')
+    wcell(5, 7, tr.get('收件人邮箱', ''), val_font)
     # I5:J5 (merged) = 报关类型值
-    ws['I5'] = tr.get('报关方式', '')
+    wcell(5, 9, tr.get('报关方式', ''), val_font)
     # K5:M5 (merged) = 交货仓库值
-    ws['K5'] = ''  # 交货仓库 — 按需填写
+    wcell(5, 11, '', val_font)  # 交货仓库 — 按需填写
 
     # ── Row 7-10: VAT / 渠道 / 包税 / 物品属性 ──
     # B7:H7 = VAT公司名称/公司名称
-    ws['B7'] = tr.get('VAT公司英文名', '')
+    wcell(7, 2, tr.get('VAT公司英文名', ''), val_font)
     # B8:H8 = VAT号
-    ws['B8'] = tr.get('VAT号', '')
+    wcell(8, 2, tr.get('VAT号', ''), val_font)
     # B9:H9 = EORI号
-    ws['B9'] = tr.get('EORI号', '')
+    wcell(9, 2, tr.get('EORI号', ''), val_font)
     # B10:H10 = VAT注册地址
-    ws['B10'] = tr.get('VAT注册地址', '')
+    wcell(10, 2, tr.get('VAT注册地址', ''), val_font)
     # I7:K10 (merged) = 渠道（服务名）
-    ws['I7'] = tr.get('服务', '')
+    wcell(7, 9, tr.get('服务', ''), val_font)
     # L7:L10 (merged) = 是否包税
-    ws['L7'] = tr.get('交税方式', '')
+    wcell(7, 12, tr.get('交税方式', ''), val_font)
     # M7:M10 (merged) = 物品属性（从中文品名推断）
     category = _guess_product_category(tr)
-    ws['M7'] = category
+    wcell(7, 13, category, val_font)
+
+    # 收集待嵌入图片
+    pending_images = {}
 
     # ══════════════════════════════════════════════
     #  数据行 (Row 12+)
@@ -690,7 +696,7 @@ def convert_to_hangle(tr, output_path, region='uk'):
             20: raw_cbm,                                                          # T: CBM
             21: '是' if has_battery == '是' else '否',                            # U: 是否带电
             22: '是' if has_magnet == '是' else '否',                             # V: 是否带磁
-            23: str(dr.get('Q', '') or ''),                                      # W: 产品图片
+            23: str(dr.get('Q', '') or ''),                                      # W: 产品图片（嵌入）
             24: str(dr['O']) if dr['O'] else '',                                 # X: 链接
             25: str(dr.get('V', '') or ''),                                      # Y: PO Number
         }
@@ -701,8 +707,15 @@ def convert_to_hangle(tr, output_path, region='uk'):
         for col_idx, val in data.items():
             if val is None or val == '':
                 continue
-            wcell(r, col_idx, val, data_font, center_align, thin_border,
+            wcell(r, col_idx, val, val_font, center_align, thin_border,
                   nf_map.get(col_idx, None))
+
+        # 收集图片（W列 = 产品图片）
+        src_row = dr.get('_row')
+        img_bytes = tr.images.get(src_row) if src_row else None
+        if img_bytes:
+            col_w = chr(64 + 23)  # W
+            pending_images[f'{col_w}{r}'] = img_bytes
 
     num_data = len(tr.data_rows)
 
@@ -758,8 +771,15 @@ def convert_to_hangle(tr, output_path, region='uk'):
 
     # ── 保存 ──
     wb.save(output_path)
+
+    # 后处理：嵌入产品图片（IMAGE() 公式 + xl/media/ 双重）
+    if pending_images:
+        _embed_images_as_cell_images(output_path, pending_images, image_url_base)
+
     print(f'✅ 航乐{region_label}发票已生成: {os.path.basename(output_path)}')
     print(f'   数据: {num_data} 行, 总件数: {total_qty}, 总价: {total_price:.2f} {currency_label}')
+    if pending_images:
+        print(f'   嵌入图片: {len(pending_images)} 张')
     return True
 
 
@@ -911,21 +931,53 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
         tree = ET.parse(sheet_path)
         root = tree.getroot()
 
+        # 获取最后一个行号，用于创建新行引用
+        sheet_rels = []
+        for child in root:
+            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            if tag == 'sheetData':
+                sheetData = child
+                break
+
         for cell_ref, img_bytes in sorted_refs:
             img_filename = img_filenames[cell_ref]
             cell = root.find(f'.//{{{NS_S}}}c[@r="{cell_ref}"]')
             if cell is not None:
                 for child in list(cell):
                     cell.remove(child)
-                f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
-                if image_url_base:
-                    f_elem.text = f'_xlfn.IMAGE("{image_url_base}/{img_filename}", "", 0)'
-                else:
-                    f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
-                if 't' in cell.attrib:
-                    del cell.attrib['t']
             else:
-                print(f'  ⚠️  未找到单元格 {cell_ref}')
+                # 创建新单元格
+                max_row = 0
+                for row_elem in sheetData.findall(f'{{{NS_S}}}row'):
+                    r_attr = row_elem.get('r', '0')
+                    try:
+                        max_row = max(max_row, int(r_attr))
+                    except:
+                        pass
+                # 从cell_ref解析行号
+                import re
+                m = re.match(r'([A-Z]+)(\d+)', cell_ref)
+                if not m:
+                    print(f'  ⚠️  无法解析单元格引用 {cell_ref}')
+                    continue
+                col_letters, row_num = m.group(1), m.group(2)
+                # 查找或创建行
+                row_elem = sheetData.find(f'{{{NS_S}}}row[@r="{row_num}"]')
+                if row_elem is None:
+                    row_elem = ET.SubElement(sheetData, f'{{{NS_S}}}row')
+                    row_elem.set('r', row_num)
+                cell = ET.SubElement(row_elem, f'{{{NS_S}}}c')
+                cell.set('r', cell_ref)
+            # 写入IMAGE公式
+            f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
+            if image_url_base:
+                f_elem.text = f'_xlfn.IMAGE("{image_url_base}/{img_filename}", "", 0)'
+            else:
+                f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
+            if 't' in cell.attrib:
+                del cell.attrib['t']
+            if 's' in cell.attrib:
+                del cell.attrib['s']
 
         tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
 
