@@ -70,17 +70,29 @@ def index():
 
 @app.route('/debug_template', methods=['GET'])
 def debug_template():
-    """调试：查看模板文件信息"""
+    """调试：查看模板文件信息和环境"""
     import os
     from openpyxl import load_workbook
     tpl_path = os.path.join(INVOICE_DIR, '天图单票专用模板20260601.xlsx')
     info = {'status': 'unknown', 'path': tpl_path, 'exists': os.path.exists(tpl_path)}
+    # 检查Pillow
+    try:
+        import PIL
+        info['pillow'] = PIL.__version__
+    except ImportError:
+        info['pillow'] = 'NOT INSTALLED'
+    # git commit
+    try:
+        import subprocess
+        sha = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, cwd=os.path.dirname(THIS_DIR))
+        info['commit'] = sha.stdout.strip() if sha.returncode == 0 else 'unknown'
+    except:
+        info['commit'] = 'error'
     if info['exists']:
         info['size'] = os.path.getsize(tpl_path)
         try:
             wb = load_workbook(tpl_path, data_only=True)
             info['sheet2_rows'] = wb['Sheet2'].max_row
-            # 前3条和后3条服务
             ws2 = wb['Sheet2']
             first3 = [ws2.cell(r, 1).value for r in range(1, 4)]
             last3 = [ws2.cell(r, 1).value for r in range(info['sheet2_rows']-2, info['sheet2_rows']+1)]
