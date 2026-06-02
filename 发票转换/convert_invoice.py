@@ -33,6 +33,8 @@ from openpyxl.styles import (
     Font, Alignment, Border, Side, PatternFill
 )
 from openpyxl.utils import get_column_letter
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from io import BytesIO
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -67,6 +69,7 @@ class TRInvoice:
         self.ws = self.wb['Page1']
         self.header = {}       # 头部字段 dict
         self.data_rows = []    # 数据行列表
+        self.images = {}       # {行号: image_bytes} 提取的嵌入图片
         self._parse()
 
     def _cell_str(self, row, col):
@@ -140,8 +143,41 @@ class TRInvoice:
                 'T': self._cell_val(r, 20),      # FNSKU
                 'U': self._cell_val(r, 21),      # SKU
                 'V': self._cell_val(r, 22),      # PO Number
+                '_row': r,                       # 源文件行号（图片映射用）
             }
             self.data_rows.append(row_data)
+
+        # ── 提取嵌入图片 (来自Q列/col 17) ──
+        if hasattr(ws, '_images') and ws._images:
+            for img in ws._images:
+                try:
+                    anchor = img.anchor
+                    if hasattr(anchor, '_from'):
+                        img_col = anchor._from.col + 1
+                        img_row = anchor._from.row + 1
+                        # Q列=17，数据行范围18+
+                        if img_col == 17 and img_row >= 18:
+                            # 获取图片字节数据
+                            img_data = None
+                            ref = getattr(img, 'ref', None)
+                            if isinstance(ref, BytesIO):
+                                img_data = ref.getvalue()
+                            elif isinstance(ref, str):
+                                # 通过关系ID从workbook获取
+                                if hasattr(self.wb, '_images') and ref in self.wb._images:
+                                    part = self.wb._images[ref]
+                                    if hasattr(part, '_blob'):
+                                        img_data = part._blob
+                            if img_data is None:
+                                data = img._data()
+                                if isinstance(data, bytes):
+                                    img_data = data
+                                elif isinstance(data, BytesIO):
+                                    img_data = data.getvalue()
+                            if img_data:
+                                self.images[img_row] = img_data
+                except Exception:
+                    pass
 
     def get(self, key, default=None):
         """获取头部字段值"""
@@ -388,9 +424,21 @@ def convert_to_tiantu(tr, output_path):
         # L: 产品型号
         set_cell('L', r, dr['N'], font_data, center_align, thin_border)
 
-        # M: 产品图片链接 (图片嵌入暂不支持，放链接)
-        img_link = dr.get('Q', '') or ''
-        set_cell('M', r, img_link, font_data, center_align, thin_border)
+        # M: 产品图片 (优先嵌入图片，其次放链接文本)
+        src_row = dr.get('_row')
+        img_bytes = tr.images.get(src_row) if src_row else None
+        if img_bytes:
+            try:
+                img = OpenpyxlImage(BytesIO(img_bytes))
+                img.width = 70
+                img.height = 70
+                ws.add_image(img, f'M{r}')
+            except:
+                pass
+        # 也保留产品图片链接文本（如果有的话）
+        q_val = dr.get('Q', '') or ''
+        if q_val and not img_bytes:
+            set_cell('M', r, q_val, font_data, center_align, thin_border)
 
         # N: 产品销售链接
         set_cell('N', r, dr['O'] if dr['O'] else '',
