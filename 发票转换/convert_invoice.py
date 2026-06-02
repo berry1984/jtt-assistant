@@ -851,9 +851,12 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
     """
     后处理 xlsx 文件，将图片嵌入为单元格值。
 
-    image_url_base: 如果提供，IMAGE 公式使用此 URL 前缀（如 http://host/temp/xxx），
-                    图片需由调用方提前保存到对应路径。
-                    如果不提供，写入 `0#` 内部引用（在 xl/media/ 中保留图片副本）。
+    始终做两件事：
+      1. 图片写入 xl/media/（离线后备，文件自带图片）
+      2. 单元格写入 _xlfn.IMAGE() 公式（Excel 365 "放置在单元格中"）
+
+    image_url_base: 如果提供，公式引用服务器 URL（在线时显示图片）；
+                    如果不提供，用 "0#" 内部引用（部分 Excel 版本可能不可用）。
     """
     if not cell_image_map:
         return
@@ -869,47 +872,11 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
         with zipfile.ZipFile(xlsx_path, 'r') as z:
             z.extractall(tmp_dir)
 
-        # ── 如果提供了 image_url_base, 直接写 IMAGE 公式（不嵌入图片到 xlsx）──
         sorted_refs = list(cell_image_map.items())
 
-        if image_url_base:
-            # URL 模式：公式引用服务器上的图片，无需写入 xl/media/
-            sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
-            if not os.path.exists(sheet_path):
-                print(f'  ⚠️  sheet1.xml 不存在，跳过图片嵌入')
-                return
-            tree = ET.parse(sheet_path)
-            root = tree.getroot()
-            for i, (cell_ref, img_bytes) in enumerate(sorted_refs):
-                img_filename = f'image_tiantu_{i+1}.png'
-                cell = root.find(f'.//{{{NS_S}}}c[@r="{cell_ref}"]')
-                if cell is not None:
-                    for child in list(cell):
-                        cell.remove(child)
-                    f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
-                    f_elem.text = f'_xlfn.IMAGE("{image_url_base}/{img_filename}", "", 0)'
-                    if 't' in cell.attrib:
-                        del cell.attrib['t']
-                else:
-                    print(f'  ⚠️  未找到单元格 {cell_ref}')
-            tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
-
-            final_path = xlsx_path + '.tmp'
-            with zipfile.ZipFile(final_path, 'w', zipfile.ZIP_DEFLATED) as zout:
-                for dirpath, dirnames, filenames in os.walk(tmp_dir):
-                    for fn in filenames:
-                        full_path = os.path.join(dirpath, fn)
-                        arcname = os.path.relpath(full_path, tmp_dir)
-                        zout.write(full_path, arcname)
-            shutil.move(final_path, xlsx_path)
-            print(f'  📷 已嵌入 {len(cell_image_map)} 张图片到单元格（IMAGE 公式 + 服务器 URL）')
-            return
-
-        # ── 无 image_url_base：回退到嵌入图片到 xl/media/（"0#" 内部引用）──
+        # ── 2. 写入图片到 xl/media/（离线后备）──
         media_dir = os.path.join(tmp_dir, 'xl', 'media')
         os.makedirs(media_dir, exist_ok=True)
-
-        # 写图片文件
         img_filenames = {}
         for i, (cell_ref, img_bytes) in enumerate(sorted_refs):
             img_filename = f'image_tiantu_{i+1}.png'
@@ -917,7 +884,7 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
                 f.write(img_bytes)
             img_filenames[cell_ref] = img_filename
 
-        # 修改 sheet1.xml
+        # ── 3. 修改 sheet1.xml：写入 IMAGE 公式 ──
         sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
         if not os.path.exists(sheet_path):
             print(f'  ⚠️  sheet1.xml 不存在，跳过图片嵌入')
@@ -933,7 +900,10 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
                 for child in list(cell):
                     cell.remove(child)
                 f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
-                f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
+                if image_url_base:
+                    f_elem.text = f'_xlfn.IMAGE("{image_url_base}/{img_filename}", "", 0)'
+                else:
+                    f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
                 if 't' in cell.attrib:
                     del cell.attrib['t']
             else:
@@ -941,7 +911,7 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
 
         tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
 
-        # 补充 Content_Types
+        # ── 4. 补充 Content_Types ──
         ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
         if os.path.exists(ct_path):
             ct_tree = ET.parse(ct_path)
@@ -957,7 +927,7 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
                 png_default.set('ContentType', 'image/png')
             ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
 
-        # 添加 sheet → media 关系
+        # ── 5. 添加 sheet → media 关系 ──
         sheet_rels_dir = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
         os.makedirs(sheet_rels_dir, exist_ok=True)
         rels_path = os.path.join(sheet_rels_dir, 'sheet1.xml.rels')
@@ -1000,7 +970,7 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
         rels_tree = ET.ElementTree(rels_root)
         rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
 
-        # 重新打包
+        # ── 6. 重新打包 ──
         final_path = xlsx_path + '.tmp'
         with zipfile.ZipFile(final_path, 'w', zipfile.ZIP_DEFLATED) as zout:
             for dirpath, dirnames, filenames in os.walk(tmp_dir):
@@ -1010,7 +980,9 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
                     zout.write(full_path, arcname)
 
         shutil.move(final_path, xlsx_path)
-        print(f'  ⚠️  已嵌入 {len(cell_image_map)} 张图片（0# 内部引用，仅在部分 Excel 版本可用）')
+
+        mode = f'IMAGE 公式 + 服务器 URL + xl/media/ 后备' if image_url_base else '0# 内部引用 + xl/media/'
+        print(f'  📷 已嵌入 {len(cell_image_map)} 张图片（{mode}）')
 
     except Exception as e:
         print(f'  ⚠️  图片嵌入后处理出错: {e}')
