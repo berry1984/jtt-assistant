@@ -31,6 +31,11 @@ sys.path.insert(0, INVOICE_DIR)
 from gen_bill import load_data, build_rows, sort_rows, generate_bill
 from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
 
+# ── 思锐(SR)账单生成模块 ──
+SR_DIR = os.path.join(PROJECT_DIR, 'SR账单自动生成')
+sys.path.insert(0, PROJECT_DIR)
+from gen_sr_bill import read_system_bill, read_order_list, generate_bill as generate_sr_bill, determine_channel
+
 app = Flask(__name__)
 app.secret_key = 'jtt-ai-assistant-secret'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
@@ -290,7 +295,85 @@ def invoice_convert():
         atexit.register(cleanup)
 
 
-if __name__ == '__main__':
+# ═══════════════════════════════════════════════════════════
+#  功能3：思锐(SR)账单自动生成  （使用订单列表渠道+可调汇率）
+# ═══════════════════════════════════════════════════════════
+
+@app.route('/generate_sr', methods=['POST'])
+def generate_sr():
+    bill_file = request.files.get('sr_bill_file')
+    order_file = request.files.get('sr_order_file')
+
+    if not bill_file:
+        flash('请上传系统账单文件')
+        return redirect('/sr')
+
+    tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
+    try:
+        # 保存上传文件
+        bill_path = os.path.join(tmp_dir, 'system_bill.xls')
+        bill_file.save(bill_path)
+
+        order_list = {}
+        order_path = None
+        if order_file and order_file.filename:
+            order_path = os.path.join(tmp_dir, 'order_list.xlsx')
+            order_file.save(order_path)
+            order_list = read_order_list(order_path)
+
+        # AB2 汇率（用户手动输入，默认0.1282）
+        try:
+            ab2_rate = float(request.form.get('ab2_rate', '0.1282'))
+        except ValueError:
+            ab2_rate = 0.1282
+
+        # 读取系统账单
+        waybills = read_system_bill(bill_path)
+        if not waybills:
+            flash('系统账单中没有找到运单数据')
+            return redirect('/sr')
+
+        # 自动查找模板
+        template_path = os.path.join(SR_DIR, '思锐账单模板模板 思锐开票账单-JTT（5.1-5.31）.xlsx')
+        if not os.path.exists(template_path):
+            for f in os.listdir(SR_DIR):
+                if '思锐' in f and f.endswith('.xlsx') and '模板' in f:
+                    template_path = os.path.join(SR_DIR, f)
+                    break
+
+        if not os.path.exists(template_path):
+            flash('找不到思锐账单模板文件')
+            return redirect('/sr')
+
+        # 生成输出文件名
+        from datetime import date
+        today = date.today()
+        output_name = f'思锐开票账单-JTT（{today.year}.{today.month:02d}.01-{today.month:02d}.{today.day:02d}）.xlsx'
+        output_path = os.path.join(tmp_dir, output_name)
+
+        # 生成账单（传入自定义AB2汇率）
+        from gen_sr_bill import generate_bill as run_sr_bill
+        success = run_sr_bill(waybills, template_path, output_path, order_list, ab2_rate=ab2_rate)
+
+        if not success or not os.path.exists(output_path):
+            flash('生成思锐账单失败')
+            return redirect('/sr')
+
+        return send_file(output_path,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         as_attachment=True,
+                         download_name=output_name)
+
+    except Exception as e:
+        flash(f'处理出错: {str(e)}')
+        return redirect('/sr')
+    finally:
+        pass
+
+
+@app.route('/sr', methods=['GET'])
+def sr_page():
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='sr')
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
     print("  JTT电商AI助手  — 一站式跨境物流工具")

@@ -128,8 +128,13 @@
 <div class="tabs">
   <button class="tab-btn {% if active_tab == 'bill' %}active{% endif %}"
           onclick="switchTab('bill')">
-    📋 账单生成
+    📋 TR账单
     <span class="badge">3个Excel</span>
+  </button>
+  <button class="tab-btn {% if active_tab == 'sr' %}active{% endif %}"
+          onclick="switchTab('sr')">
+    📊 思锐账单
+    <span class="badge">2个Excel</span>
   </button>
   <button class="tab-btn {% if active_tab == 'invoice' %}active{% endif %}"
           onclick="switchTab('invoice')">
@@ -188,6 +193,46 @@
   </div>
 
   <!-- ════════════════════════════════════════ -->
+  <!-- Tab: 思锐账单 -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'sr' %}active{% endif %}" id="tab-sr">
+
+    <div class="info-box">
+      <strong>📌 流程：</strong>上传系统导出的账单(.xls) + 思锐订单列表(.xlsx) → 自动生成思锐开票账单<br>
+      <strong>📎 渠道来源：</strong>订单列表 <code>AH列(服务)</code> · FBA单号来自 <code>C列(扩展单号)</code>
+    </div>
+
+    <form method="post" action="/generate_sr" enctype="multipart/form-data" id="srForm">
+      <div class="form-group">
+        <label>系统账单 <small>(.xls，运通系统导出)</small></label>
+        <div class="file-input-wrapper" id="sw1">
+          <input type="file" name="sr_bill_file" accept=".xls,.xlsx" required
+                 onchange="updateLabel(this, 'sw1')">
+          <div class="icon">📄</div>
+          <div class="hint">点击上传系统账单文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>思锐订单列表 <small>(.xlsx，可选，用于渠道/FBA匹配)</small></label>
+        <div class="file-input-wrapper" id="sw2">
+          <input type="file" name="sr_order_file" accept=".xlsx"
+                 onchange="updateLabel(this, 'sw2')">
+          <div class="icon">📋</div>
+          <div class="hint">点击上传思锐订单列表</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>人民币→欧元汇率 (AB2) <small>默认 0.1282（1元=0.1282欧元）</small></label>
+        <input type="number" name="ab2_rate" step="0.0001" value="0.1282"
+               style="width:100%;padding:12px 16px;border:2px solid #d0d5dd;border-radius:10px;font-size:15px;">
+      </div>
+      <button type="submit" class="btn btn-primary" id="srBtn">生成思锐账单</button>
+    </form>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
   <!-- Tab: 发票转换 -->
   <!-- ════════════════════════════════════════ -->
   <div class="tab-content {% if active_tab == 'invoice' %}active{% endif %}" id="tab-invoice">
@@ -234,8 +279,8 @@ function switchTab(name) {
   document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // URL 更新
-  const url = name === 'bill' ? '/' : '/invoice';
-  history.replaceState(null, '', url);
+  const urls = {bill: '/', sr: '/sr', invoice: '/invoice'};
+  history.replaceState(null, '', urls[name] || '/');
 }
 
 // ── 文件选择 ──
@@ -270,6 +315,10 @@ document.getElementById('billForm')?.addEventListener('submit', function() {
 document.getElementById('invoiceForm')?.addEventListener('submit', function() {
   const btn = document.getElementById('invoiceBtn');
   btn.disabled = true; btn.textContent = '⏳ 转换中...'; btn.classList.add('loading');
+});
+document.getElementById('srForm')?.addEventListener('submit', function() {
+  const btn = document.getElementById('srBtn');
+  btn.disabled = true; btn.textContent = '⏳ 生成思锐账单...'; btn.classList.add('loading');
 });
 </script>
 </body>
