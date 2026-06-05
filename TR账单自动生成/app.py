@@ -386,6 +386,9 @@ def generate_sr():
 @app.route('/sr', methods=['GET'])
 def sr_page():
     return render_template('index.html', targets=TARGET_OPTIONS, active_tab='sr')
+
+
+if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
     print("  JTT电商AI助手  — 一站式跨境物流工具")
