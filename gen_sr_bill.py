@@ -17,8 +17,9 @@
 import sys, os, shutil, re
 from datetime import datetime
 from collections import defaultdict, OrderedDict
-import xlrd
 from openpyxl import load_workbook
+
+# xlrd 在函数内延迟导入，避免Railway部署时因依赖问题导致整个app崩溃
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -62,6 +63,7 @@ def read_system_bill(xls_path):
     读取系统账单xls文件，按运单号分组解析。
     返回: OrderedDict { 运单号: waybill_info }
     """
+    import xlrd  # 延迟导入，避免Railway部署时因依赖问题崩溃
     wb = xlrd.open_workbook(xls_path)
     ws = wb.sheet_by_name('运单')
 
