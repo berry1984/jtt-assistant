@@ -31,10 +31,18 @@ sys.path.insert(0, INVOICE_DIR)
 from gen_bill import load_data, build_rows, sort_rows, generate_bill
 from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
 
-# ── 思锐(SR)账单生成模块 ──
+# ── 思锐(SR)账单生成模块（延迟导入，避免启动时依赖缺失） ──
 SR_DIR = os.path.join(PROJECT_DIR, 'SR账单自动生成')
 sys.path.insert(0, PROJECT_DIR)
-from gen_sr_bill import read_system_bill, read_order_list, generate_bill as generate_sr_bill, determine_channel
+
+def _get_sr_module():
+    """延迟导入 gen_sr_bill，避免铁路部署时依赖问题导致整个app崩溃"""
+    import importlib
+    try:
+        return importlib.import_module('gen_sr_bill')
+    except ImportError as e:
+        print(f"[SR] 导入gen_sr_bill失败: {e}")
+        return None
 
 app = Flask(__name__)
 app.secret_key = 'jtt-ai-assistant-secret'
@@ -301,6 +309,11 @@ def invoice_convert():
 
 @app.route('/generate_sr', methods=['POST'])
 def generate_sr():
+    sr = _get_sr_module()
+    if not sr:
+        flash('思锐账单模块加载失败，请联系管理员')
+        return redirect('/sr')
+
     bill_file = request.files.get('sr_bill_file')
     order_file = request.files.get('sr_order_file')
 
@@ -319,7 +332,7 @@ def generate_sr():
         if order_file and order_file.filename:
             order_path = os.path.join(tmp_dir, 'order_list.xlsx')
             order_file.save(order_path)
-            order_list = read_order_list(order_path)
+            order_list = sr.read_order_list(order_path)
 
         # AB2 汇率（用户手动输入，默认0.1282）
         try:
@@ -328,7 +341,7 @@ def generate_sr():
             ab2_rate = 0.1282
 
         # 读取系统账单
-        waybills = read_system_bill(bill_path)
+        waybills = sr.read_system_bill(bill_path)
         if not waybills:
             flash('系统账单中没有找到运单数据')
             return redirect('/sr')
@@ -352,8 +365,7 @@ def generate_sr():
         output_path = os.path.join(tmp_dir, output_name)
 
         # 生成账单（传入自定义AB2汇率）
-        from gen_sr_bill import generate_bill as run_sr_bill
-        success = run_sr_bill(waybills, template_path, output_path, order_list, ab2_rate=ab2_rate)
+        success = sr.generate_bill(waybills, template_path, output_path, order_list, ab2_rate=ab2_rate)
 
         if not success or not os.path.exists(output_path):
             flash('生成思锐账单失败')
