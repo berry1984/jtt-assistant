@@ -223,7 +223,7 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
     # ── 清除旧数据（保留标题行1-3和汇率行2）──
     # 1. 取消合并数据区域的合并单元格
     for mr in list(ws.merged_cells.ranges):
-        if mr.min_row >= 4:
+        if 4 <= mr.min_row < 40:
             ws.unmerge_cells(str(mr))
 
     # 2. 清除行4-34的内容
@@ -283,7 +283,7 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
             freight_rate = round(freight_amount / weight, 2)
 
         # 确定渠道
-        channel = determine_channel(wb_no, order_list) if order_list else DEFAULT_CHANNEL.get((country, has_fba), '')
+        channel = determine_channel(wb_no, order_list) if order_list else ''
 
         # 确定受益部门和业务经理
         dept, manager = get_dept_manager(country, has_fba)
@@ -638,76 +638,7 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
     # ── 更新标题行 ──
     ws['B1'].value = f'赛诺吉（深圳）国际货运代理有限公司2026年5月对账单'
 
-    # ── 清除原银行信息区域（行40-50）──
-    for row in range(40, 51):
-        for col in range(1, 45):
-            cell = ws.cell(row=row, column=col)
-            cell.value = None
-            cell.border = Border()
-    for mr in list(ws.merged_cells.ranges):
-        if mr.min_row >= 40:
-            try:
-                ws.unmerge_cells(str(mr))
-            except:
-                pass
-
-    # ── 银行信息（紧跟合计行后）──
-    info_row = sr + 2  # 空一行后
-
-    ws.merge_cells(f'A{info_row}:AR{info_row}')
-    ws[f'A{info_row}'].value = '以下账户信息为我司唯一合法收款账户，如付款至其他账户我司概不负责!'
-    ws[f'A{info_row}'].font = Font(name='微软雅黑', size=9, color='FF0000')
-    ws[f'A{info_row}'].alignment = Alignment(horizontal='left', vertical='center')
-
-    acct_row = info_row + 1
-    bank_text = ('对公账户：\n'
-        '账户名：赛诺吉(深圳)国际货运代理有限公司\n'
-        '公司地址：深圳市福田区沙头街道沙嘴社区沙嘴路8号红树华府A栋35层3504、3505、3506\n'
-        '联系电话：0755-82720817\n'
-        '账  号：41009000040015688\n'
-        '开户行：中国农业银行深圳福田保税区支行')
-    ws.merge_cells(f'A{acct_row}:AR{acct_row}')
-    ws[f'A{acct_row}'].value = bank_text
-    ws[f'A{acct_row}'].font = Font(name='微软雅黑', size=9)
-    ws[f'A{acct_row}'].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-    ws.row_dimensions[acct_row].height = 110
-
-    note_row = acct_row + 1
-    ws.merge_cells(f'A{note_row}:AR{note_row}')
-    ws[f'A{note_row}'].value = '请勿用私人账户付到我司公账，谢谢配合。'
-    ws[f'A{note_row}'].font = Font(name='微软雅黑', size=9, color='FF0000')
-    ws[f'A{note_row}'].alignment = Alignment(horizontal='left', vertical='center')
-
-    # 外币账户信息
-    fc_row = note_row + 2
-    ws.merge_cells(f'A{fc_row}:B{fc_row}')
-    ws[f'A{fc_row}'].value = '外币账户'
-    ws[f'A{fc_row}'].font = BOLD_FONT
-
-    ws.merge_cells(f'E{fc_row}:H{fc_row}')
-    ws[f'E{fc_row}'].value = '备注'
-    ws[f'E{fc_row}'].font = BOLD_FONT
-    ws.merge_cells(f'I{fc_row}:AR{fc_row}')
-    ws[f'I{fc_row}'].value = '外币账户请付款方转账时务必选择所有付款&中间行手续费都由付款方承担，我司需全额到账。'
-    ws[f'I{fc_row}'].font = Font(name='微软雅黑', size=9)
-    ws[f'I{fc_row}'].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-
-    r = fc_row + 1
-    fcinfo = [
-        ('Account Name:', 'JING TUN TAI LIMITED'),
-        ('Account:(EUR)', '965-30-013995'),
-        ('Bank Name：', 'MEGA INTERNATIONAL COMMERCIAL BANK HONG KONG BRANCH'),
-        ('Bank Address：', 'Suite 2001,22/F,Prudential Tower The Gateway,Harbour City,21 Canton Road Tsimshatsui,Kowloon,Hong Kong'),
-        ('Swift code:', 'ICBCHKHH'),
-    ]
-    for label, value in fcinfo:
-        ws.merge_cells(f'A{r}:B{r}')
-        ws[f'A{r}'].value = label
-        ws[f'A{r}'].font = DATA_FONT
-        ws.merge_cells(f'D{r}:AR{r}')
-        ws[f'D{r}'].value = value
-        ws[f'D{r}'].font = DATA_FONT
-        r += 1
+    # ── 银行信息使用模板原始内容（行40-50），不做任何修改 ──
 
     # ── 保存 ──
     wb.save(output_path)
