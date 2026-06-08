@@ -141,6 +141,11 @@
     📄 发票转换
     <span class="badge">TR→天图/航乐</span>
   </button>
+  <button class="tab-btn {% if active_tab == 'picking' %}active{% endif %}"
+          onclick="switchTab('picking')">
+    📦 拣货数据
+    <span class="badge">自动填D-I列</span>
+  </button>
 </div>
 
 <div class="container">
@@ -268,6 +273,31 @@
     </form>
   </div>
 
+  <!-- ════════════════════════════════════════ -->
+  <!-- Tab: 拣货数据导出 -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'picking' %}active{% endif %}" id="tab-picking">
+
+    <div class="info-box">
+      <strong>📌 功能：</strong>上传空白拣货数据表，自动填充 D(高度) E(宽度) F(长度) G(重量) H(材积重) I(收费重) 列<br>
+      <strong>📎 规则：</strong>根据品名+客户尺寸匹配历史数据 → 取系统历史拣货数据 → 计算材积重(H=D×E×F/6000)和收费重(I=max(G,H))
+    </div>
+
+    <form method="post" action="/picking_export" enctype="multipart/form-data" id="pickingForm">
+      <div class="form-group">
+        <label>拣货数据文件 <small>(.xlsx，从运通系统导出的空白拣货表)</small></label>
+        <div class="file-input-wrapper" id="pw1">
+          <input type="file" name="picking_file" accept=".xlsx" required
+                 onchange="updateLabel(this, 'pw1')">
+          <div class="icon">📦</div>
+          <div class="hint">上传「测试数据：导出拣货数据」文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="pickingBtn">导出拣货数据</button>
+    </form>
+  </div>
+
   <div class="footer">JTT电商AI助手 v1.0</div>
 </div>
 
@@ -279,7 +309,7 @@ function switchTab(name) {
   document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // URL 更新
-  const urls = {bill: '/', sr: '/sr', invoice: '/invoice'};
+  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking'};
   history.replaceState(null, '', urls[name] || '/');
 }
 
@@ -319,6 +349,10 @@ document.getElementById('invoiceForm')?.addEventListener('submit', function() {
 document.getElementById('srForm')?.addEventListener('submit', function() {
   const btn = document.getElementById('srBtn');
   btn.disabled = true; btn.textContent = '⏳ 生成思锐账单...'; btn.classList.add('loading');
+});
+document.getElementById('pickingForm')?.addEventListener('submit', function() {
+  const btn = document.getElementById('pickingBtn');
+  btn.disabled = true; btn.textContent = '⏳ 导出中...'; btn.classList.add('loading');
 });
 </script>
 </body>

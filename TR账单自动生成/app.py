@@ -35,6 +35,9 @@ from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
 SR_DIR = os.path.join(PROJECT_DIR, 'SR账单自动生成')
 sys.path.insert(0, PROJECT_DIR)
 
+# ── 拣货数据导出模块 ──
+PICKING_DIR = os.path.join(PROJECT_DIR, '拣货数据')
+
 def _get_sr_module():
     """延迟导入 gen_sr_bill，避免铁路部署时依赖问题导致整个app崩溃"""
     import importlib
@@ -388,12 +391,112 @@ def sr_page():
     return render_template('index.html', targets=TARGET_OPTIONS, active_tab='sr')
 
 
+# ═══════════════════════════════════════════════════════════
+#  功能4：拣货数据导出
+# ═══════════════════════════════════════════════════════════
+
+@app.route('/picking', methods=['GET'])
+def picking_page():
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='picking')
+
+
+@app.route('/picking_export', methods=['POST'])
+def picking_export():
+    """上传测试拣货数据，导出填充好的拣货数据表"""
+    import sys
+    sys.path.insert(0, PICKING_DIR)
+
+    from export_picking_data import load_history, find_best_match, extract_product_names, get_box_prefix, HISTORY_FILE
+
+    test_file = request.files.get('picking_file')
+    if not test_file or test_file.filename == '':
+        flash('请上传拣货数据文件')
+        return redirect('/picking')
+
+    tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
+    try:
+        import openpyxl
+
+        # 保存上传文件
+        input_path = os.path.join(tmp_dir, 'input.xlsx')
+        test_file.save(input_path)
+
+        # 加载历史数据
+        if not os.path.exists(HISTORY_FILE):
+            flash(f'找不到历史数据文件，请确认 拣货数据/历史数据（客户数据+拣货数据对比表）.xlsx 存在')
+            return redirect('/picking')
+
+        history_records = load_history(HISTORY_FILE)
+
+        # 处理
+        wb = openpyxl.load_workbook(input_path)
+        ws = wb.active
+
+        matched, unmatched = 0, 0
+        for r in range(2, ws.max_row + 1):
+            box_num = str(ws.cell(row=r, column=3).value or '')
+            if not box_num:
+                continue
+
+            product_names = extract_product_names(str(ws.cell(row=r, column=10).value or ''))
+            box_prefix = get_box_prefix(box_num)
+            test_cust = {
+                'weight': ws.cell(row=r, column=13).value,
+                'len': ws.cell(row=r, column=14).value,
+                'width': ws.cell(row=r, column=15).value,
+                'height': ws.cell(row=r, column=16).value,
+            }
+
+            match = find_best_match(history_records, product_names, box_prefix, test_cust)
+            if not match:
+                unmatched += 1
+                continue
+
+            p = match['pick']
+            d_val, e_val, f_val = p['height'], p['width'], p['len']
+            g_val = p['weight']
+            h_val = round(d_val * e_val * f_val / 6000, 2)
+            i_val = max(round(g_val, 2), h_val)
+
+            ws.cell(row=r, column=4).value = int(d_val) if d_val == int(d_val) else round(d_val, 2)
+            ws.cell(row=r, column=5).value = int(e_val) if e_val == int(e_val) else round(e_val, 2)
+            ws.cell(row=r, column=6).value = int(f_val) if f_val == int(f_val) else round(f_val, 2)
+            ws.cell(row=r, column=7).value = round(g_val, 2)
+            ws.cell(row=r, column=8).value = h_val
+            ws.cell(row=r, column=9).value = i_val
+            matched += 1
+
+        output_name = test_file.filename.replace('测试数据：导出', '导出')
+        if output_name == test_file.filename:
+            output_name = f'导出_{test_file.filename}'
+
+        output_path = os.path.join(tmp_dir, output_name)
+        wb.save(output_path)
+
+        if matched == 0:
+            flash('⚠️ 所有行均匹配失败，请检查数据格式')
+            return redirect('/picking')
+
+        return send_file(output_path,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         as_attachment=True,
+                         download_name=output_name)
+
+    except Exception as e:
+        flash(f'处理出错: {str(e)}')
+        return redirect('/picking')
+    finally:
+        pass
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
     print("  JTT电商AI助手  — 一站式跨境物流工具")
     print("=" * 50)
     print(f"  📋 账单生成  → http://localhost:{port}")
+    print(f"  📊 思锐账单  → http://localhost:{port}/sr")
     print(f"  📄 发票转换  → http://localhost:{port}/invoice")
+    print(f"  📦 拣货导出  → http://localhost:{port}/picking")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port)

@@ -12,6 +12,8 @@ ngrok
 !思锐账单模板*.xlsx
 !思锐订单列表*.xlsx
 !系统账单*.xls
+!拣货数据/历史数据（客户数据+拣货数据对比表）.xlsx
+!拣货数据/拣货数据规则.docx
 .claude/
 uploads/
 output/
