@@ -65,12 +65,24 @@ TR_COL = {
 # ═══════════════════════════════════════════════════════════════
 
 class TRInvoice:
-    """解析TR/思锐/赛诺吉下单发票"""
+    """解析TR/思锐/赛诺吉下单发票
+
+    支持格式：
+      - TR系统下单发票：工作表 Page1，Row 1-16 头部，Row 18+ 数据
+      - 思锐/下单发票：工作表 发票，Row 1-26 头部，Row 28+ 数据
+      自动检测格式。
+    """
 
     def __init__(self, path):
         self.path = path
         self.wb = load_workbook(path, data_only=True)
-        self.ws = self.wb['Page1']
+        # 自动检测工作表
+        if 'Page1' in self.wb.sheetnames:
+            self.ws = self.wb['Page1']
+        elif '发票' in self.wb.sheetnames:
+            self.ws = self.wb['发票']
+        else:
+            self.ws = self.wb[self.wb.sheetnames[0]]
         self.header = {}       # 头部字段 dict
         self.data_rows = []    # 数据行列表
         self.images = {}       # {行号: image_bytes} 提取的嵌入图片
@@ -94,6 +106,16 @@ class TRInvoice:
         return val
 
     def _parse(self):
+        """自动检测发票格式并调用对应解析器"""
+        # 检测格式：发票/下单格式的 A1 单元格为 '服务*'
+        first_label = self._cell_str(1, 1)
+        if first_label == '服务*':
+            self._parse_fapiao_format()
+        else:
+            self._parse_tr_format()
+
+    def _parse_tr_format(self):
+        """TR系统格式：工作表 Page1，Row 1-16 头部，Row 18+ 数据"""
         ws = self.ws
 
         # ── 头部 Row 1-16 ──
@@ -182,6 +204,158 @@ class TRInvoice:
                                 self.images[img_row] = img_data
                 except Exception:
                     pass
+
+    # ─────────────────────────────────────────────────────────
+    #  发票/下单 格式解析
+    #  工作表：发票，Row 1-26 头部，Row 27 列头，Row 28+ 数据
+    # ─────────────────────────────────────────────────────────
+
+    def _parse_fapiao_format(self):
+        """解析 发票/下单 格式"""
+        ws = self.ws
+
+        # ── 头部 Row 1-26：A列=标签，B列=值 ──
+        import re as _re
+        for r in range(1, 27):
+            label = self._cell_str(r, 1)
+            val = self._cell_val(r, 2)
+            if label:
+                # 清理标签：去掉尾部 *:、去掉尾部（中文括号注释）
+                clean = _re.sub(r'[（(][^）)]*[）)]$', '', label).strip().rstrip('*:')
+                self.header[clean] = val
+
+        # 补充：Row 14 C列可能是客户订单号（本文件为空，保留）
+        # 数据行中的 PO Number (R列) 会被提取为 dr['V']
+
+        # ── 数据行 Row 28+（Row 27 是列标题） ──
+        max_row = ws.max_row
+        for r in range(28, max_row + 1):
+            box_no = self._cell_val(r, 1)
+            if box_no is None or str(box_no).strip() == '':
+                continue
+
+            # 列映射：发票格式列位置 → TR 内部字段 A-V
+            # A(1)=货箱编号, B(2)=英文品名, C(3)=中文品名, D(4)=数量,
+            # E(5)=单价, F(6)=重量, G(7)=长, H(8)=宽, I(9)=高,
+            # J(10)=海关编码, K(11)=品牌, L(12)=材质, M(13)=型号,
+            # N(14)=用途, O(15)=链接, P(16)=图片(DISPIMG), Q(17)=SKU,
+            # R(18)=PO, S(19)=ASIN
+            row_data = {
+                'A': box_no,                                # 货箱编号
+                'B': self._cell_val(r, 6),                  # F: 重量
+                'C': self._cell_val(r, 7),                  # G: 长度
+                'D': self._cell_val(r, 8),                  # H: 宽度
+                'E': self._cell_val(r, 9),                  # I: 高度
+                'F': self._cell_val(r, 2),                  # B: 英文品名
+                'G': self._cell_val(r, 3),                  # C: 中文品名
+                'H': self._cell_val(r, 5),                  # E: 单价
+                'I': self._cell_val(r, 4),                  # D: 数量
+                'J': self._cell_val(r, 12),                 # L: 材质
+                'K': self._cell_val(r, 10),                 # J: 海关编码
+                'L': self._cell_val(r, 14),                 # N: 用途
+                'M': self._cell_val(r, 11),                 # K: 品牌
+                'N': self._cell_val(r, 13),                 # M: 型号
+                'O': self._cell_val(r, 15),                 # O: 链接
+                'P': None,                                  # P: 销售价格(本格式无此列)
+                'Q': self._cell_val(r, 16),                 # P: 产品图片(DISPIMG公式)
+                'R': None,                                  # 产品重量(本格式无此列)
+                'S': self._cell_val(r, 19),                 # S: ASIN
+                'T': None,                                  # FNSKU(本格式无此列)
+                'U': self._cell_val(r, 17),                 # Q: SKU
+                'V': self._cell_val(r, 18),                 # R: PO Number
+                '_row': r,
+            }
+            self.data_rows.append(row_data)
+
+        # ── 提取嵌入图片 (WPS cellimages.xml 格式) ──
+        self._extract_wps_cell_images()
+
+    # ─────────────────────────────────────────────────────────
+    #  WPS 图片提取（cellimages.xml 格式，配合 DISPIMG 公式）
+    # ─────────────────────────────────────────────────────────
+
+    def _extract_wps_cell_images(self):
+        """从 WPS cellimages.xml 格式提取嵌入图片
+
+        WPS Office 使用 xl/cellimages.xml + xl/_rels/cellimages.xml.rels
+        存储"放置在单元格中"的图片。DISPIMG 公式引用图片 ID，此方法
+        将 ID 映射回实际图片字节并存入 self.images。
+        """
+        import zipfile
+        from xml.etree import ElementTree as ET
+
+        try:
+            with zipfile.ZipFile(self.path, 'r') as z:
+                if 'xl/cellimages.xml' not in z.namelist():
+                    return
+                if 'xl/_rels/cellimages.xml.rels' not in z.namelist():
+                    return
+
+                # 读取关系映射: rId → media 图片文件
+                rels_xml = z.read('xl/_rels/cellimages.xml.rels')
+                rels_root = ET.fromstring(rels_xml)
+                rid_to_target = {}
+                for rel in rels_root:
+                    rid = rel.get('Id', '')
+                    target = rel.get('Target', '')
+                    if rid and target:
+                        rid_to_target[rid] = target
+
+                # 读取 cellimages.xml → 图片 ID → rId → 实际文件
+                ci_xml = z.read('xl/cellimages.xml')
+                ci_root = ET.fromstring(ci_xml)
+                NS_PIC = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+                NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+                # 收集 DISPIMG ID → image_bytes 的映射
+                wps_images = {}  # {dispimg_id: bytes}
+                for ci in ci_root.iter(f'{{{NS_PIC}}}pic'):
+                    nvPicPr = ci.find(f'{{{NS_PIC}}}nvPicPr')
+                    if nvPicPr is None:
+                        continue
+                    cNvPr = nvPicPr.find(f'{{{NS_PIC}}}cNvPr')
+                    if cNvPr is None:
+                        continue
+                    img_name = cNvPr.get('name', '')  # e.g., ID_A7244BAA5ACE43...
+
+                    blipFill = ci.find(f'{{{NS_PIC}}}blipFill')
+                    if blipFill is None:
+                        continue
+                    blip = blipFill.find(f'{{{NS_A}}}blip')
+                    if blip is None:
+                        continue
+                    embed = blip.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed', '')
+                    if not embed:
+                        continue
+
+                    img_target = rid_to_target.get(embed)
+                    if not img_target:
+                        continue
+
+                    img_path = f'xl/{img_target}' if not img_target.startswith('xl/') else img_target
+                    try:
+                        img_bytes = z.read(img_path)
+                        wps_images[img_name] = img_bytes
+                    except KeyError:
+                        continue
+
+                # 将图片映射到数据行
+                for dr in self.data_rows:
+                    q_val = dr.get('Q', '') or ''
+                    q_str = str(q_val)
+                    # DISPIMG 公式形如: =DISPIMG("ID_xxx",1)
+                    # 或 =_xlfn.DISPIMG("ID_xxx",1)
+                    import re
+                    m = re.search(r'DISPIMG\("([^"]+)"', q_str)
+                    if not m:
+                        continue
+                    dispimg_id = m.group(1)
+                    if dispimg_id in wps_images:
+                        src_row = dr.get('_row')
+                        if src_row:
+                            self.images[src_row] = wps_images[dispimg_id]
+        except Exception as e:
+            print(f'  ⚠️  提取 WPS 图片失败: {e}')
 
     def get(self, key, default=None):
         """获取头部字段值"""
