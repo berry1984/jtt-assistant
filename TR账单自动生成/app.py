@@ -38,6 +38,10 @@ sys.path.insert(0, PROJECT_DIR)
 # ── 拣货数据导出模块 ──
 PICKING_DIR = os.path.join(PROJECT_DIR, '拣货数据')
 
+# ── 投保区间拆分模块 ──
+INSURANCE_DIR = os.path.join(PROJECT_DIR, '投保区间拆分发票')
+sys.path.insert(0, INSURANCE_DIR)
+
 def _get_sr_module():
     """延迟导入 gen_sr_bill，避免铁路部署时依赖问题导致整个app崩溃"""
     import importlib
@@ -489,6 +493,68 @@ def picking_export():
         pass
 
 
+# ═══════════════════════════════════════════════════════════
+#  功能5：投保区间拆分
+# ═══════════════════════════════════════════════════════════
+
+@app.route('/insurance', methods=['GET'])
+def insurance_page():
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='insurance')
+
+
+@app.route('/insurance_split', methods=['POST'])
+def insurance_split():
+    """
+    上传下单发票 → 按每箱RMB拆分为 5 个区间文件 → 打包 ZIP 下载
+    """
+    invoice_file = request.files.get('insurance_file')
+    if not invoice_file or invoice_file.filename == '':
+        flash('请上传下单发票文件')
+        return redirect('/insurance')
+
+    tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
+    try:
+        invoice_path = os.path.join(tmp_dir, 'invoice.xlsx')
+        invoice_file.save(invoice_path)
+
+        # 调用拆分模块
+        from split_insurance_v2 import split_invoice_to_ranges
+        out_dir = os.path.join(tmp_dir, 'ranges')
+        out_files = split_invoice_to_ranges(invoice_path, output_dir=out_dir)
+
+        if not out_files:
+            flash('拆分失败，未生成任何文件')
+            return redirect('/insurance')
+
+        # 打包为 ZIP
+        import zipfile
+        base_name = os.path.splitext(invoice_file.filename)[0]
+        zip_name = f'{base_name}-投保拆分.zip'
+        zip_path = os.path.join(tmp_dir, zip_name)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for range_name, file_path in out_files.items():
+                arcname = os.path.basename(file_path)
+                zf.write(file_path, arcname)
+
+        return send_file(zip_path,
+                         mimetype='application/zip',
+                         as_attachment=True,
+                         download_name=zip_name)
+
+    except Exception as e:
+        flash(f'拆分出错: {str(e)}')
+        return redirect('/insurance')
+    finally:
+        def cleanup():
+            try:
+                shutil.rmtree(tmp_dir)
+            except Exception:
+                pass
+        import atexit
+        atexit.register(cleanup)
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
@@ -498,5 +564,6 @@ if __name__ == '__main__':
     print(f"  📊 思锐账单  → http://localhost:{port}/sr")
     print(f"  📄 发票转换  → http://localhost:{port}/invoice")
     print(f"  📦 拣货导出  → http://localhost:{port}/picking")
+    print(f"  🛡️ 投保拆分  → http://localhost:{port}/insurance")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port)

@@ -120,7 +120,7 @@
   <div class="logo">🚀</div>
   <div>
     <h1>JTT电商AI助手</h1>
-    <div class="sub">一站式跨境物流工具 · 账单生成 &amp; 发票转换</div>
+    <div class="sub">一站式跨境物流工具 · 账单生成 &amp; 发票转换 &amp; 投保拆分</div>
   </div>
 </div>
 
@@ -145,6 +145,11 @@
           onclick="switchTab('picking')">
     📦 拣货数据
     <span class="badge">自动填D-I列</span>
+  </button>
+  <button class="tab-btn {% if active_tab == 'insurance' %}active{% endif %}"
+          onclick="switchTab('insurance')">
+    🛡️ 投保拆分
+    <span class="badge">按RMB拆5区间</span>
   </button>
 </div>
 
@@ -298,6 +303,31 @@
     </form>
   </div>
 
+  <!-- ════════════════════════════════════════ -->
+  <!-- Tab: 投保区间拆分 -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'insurance' %}active{% endif %}" id="tab-insurance">
+
+    <div class="info-box">
+      <strong>📌 功能：</strong>上传「下单 Excel」（思锐发票模板），按每箱申报价值(RMB)拆分为 5 个投保区间文件<br>
+      <strong>📎 规则：</strong>英镑×9 · 欧元×8 · 美金×7 · 按 C1(货箱编号)分组 · 输出 ZIP 含全部区间
+    </div>
+
+    <form method="post" action="/insurance_split" enctype="multipart/form-data" id="insuranceForm">
+      <div class="form-group">
+        <label>下单发票文件 <small>(.xlsx，思锐发票模板)</small></label>
+        <div class="file-input-wrapper" id="isw1">
+          <input type="file" name="insurance_file" accept=".xlsx" required
+                 onchange="updateLabel(this, 'isw1')">
+          <div class="icon">📄</div>
+          <div class="hint">点击上传下单发票文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="insuranceBtn">开始拆分 · 下载 ZIP</button>
+    </form>
+  </div>
+
   <div class="footer">JTT电商AI助手 v1.0</div>
 </div>
 
@@ -309,7 +339,7 @@ function switchTab(name) {
   document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // URL 更新
-  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking'};
+  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance'};
   history.replaceState(null, '', urls[name] || '/');
 }
 
@@ -353,6 +383,10 @@ document.getElementById('srForm')?.addEventListener('submit', function() {
 document.getElementById('pickingForm')?.addEventListener('submit', function() {
   const btn = document.getElementById('pickingBtn');
   btn.disabled = true; btn.textContent = '⏳ 导出中...'; btn.classList.add('loading');
+});
+document.getElementById('insuranceForm')?.addEventListener('submit', function() {
+  const btn = document.getElementById('insuranceBtn');
+  btn.disabled = true; btn.textContent = '⏳ 拆分中...'; btn.classList.add('loading');
 });
 </script>
 </body>
