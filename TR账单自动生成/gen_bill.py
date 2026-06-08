@@ -199,7 +199,18 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     # Copy template
     shutil.copy(template_path, output_path)
     wb = load_workbook(output_path)
-    ws = wb['5月人民币账单（已调格式）']
+
+    # Determine month from date_range_str (dynamic, not hardcoded "5月")
+    month_nums = [int(x) for x in re.findall(r'\d+', date_range_str)] if date_range_str else []
+    bill_month = month_nums[0] if month_nums else datetime.now().month
+    sheet_name_old = '5月人民币账单（已调格式）'
+    sheet_name_new = f'{bill_month}月人民币账单（已调格式）'
+
+    # Rename sheet if month differs from template
+    if sheet_name_old in wb.sheetnames:
+        if sheet_name_old != sheet_name_new:
+            wb[sheet_name_old].title = sheet_name_new
+    ws = wb[sheet_name_new]
 
     # Capture template column fills from row 4 (first data row) for style preservation
     from openpyxl.styles import PatternFill
@@ -432,7 +443,7 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
             ws_inv.cell(row=r, column=c).value = None
     
     # Write formulas referencing the bill sheet
-    sheet_name = '5月人民币账单（已调格式）'
+    sheet_name = sheet_name_new
     ref_row = sr  # subtotal row
     
     inv_data = [
