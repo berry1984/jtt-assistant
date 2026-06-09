@@ -666,6 +666,102 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
 
     # ── 银行信息使用模板原始内容（行40-50），不做任何修改 ──
 
+    # ── 创建"运费合计"汇总Sheet ──
+    ws_summary = wb.create_sheet(title='运费合计')
+
+    # 标题行
+    summary_headers = ['货代运单号', '运费', '报关费', '运费税额', '报关费税额', '目的港费用合计', '合计']
+    for ci, h in enumerate(summary_headers, 1):
+        cell = ws_summary.cell(row=1, column=ci)
+        cell.value = h
+        cell.font = BOLD_FONT
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+
+    # 填充每一行（与原始账单数据行对应）
+    for i, r in enumerate(data_rows):
+        row_num_s = 2 + i
+        orig_row = 4 + i  # 原始账单中的数据行号
+        ws_summary.row_dimensions[row_num_s].height = 20
+
+        # A: 货代运单号（文本引用原始账单D列）
+        cell_a = ws_summary.cell(row=row_num_s, column=1)
+        cell_a.value = r['wb_no']
+        cell_a.font = DATA_FONT
+        cell_a.alignment = CENTER_ALIGN
+        cell_a.border = THIN_BORDER
+
+        # B: 运费 = 原始账单U列
+        cell_b = ws_summary.cell(row=row_num_s, column=2)
+        cell_b.value = f"='原始账单'!U{orig_row}"
+        cell_b.font = DATA_FONT
+        cell_b.alignment = CENTER_ALIGN
+        cell_b.border = THIN_BORDER
+        cell_b.number_format = CNY_FMT
+
+        # C: 报关费 = 原始账单X列
+        cell_c = ws_summary.cell(row=row_num_s, column=3)
+        cell_c.value = f"='原始账单'!X{orig_row}"
+        cell_c.font = DATA_FONT
+        cell_c.alignment = CENTER_ALIGN
+        cell_c.border = THIN_BORDER
+        cell_c.number_format = CNY_FMT
+
+        # D: 运费税额 = 原始账单AD列
+        cell_d = ws_summary.cell(row=row_num_s, column=4)
+        cell_d.value = f"='原始账单'!AD{orig_row}"
+        cell_d.font = DATA_FONT
+        cell_d.alignment = CENTER_ALIGN
+        cell_d.border = THIN_BORDER
+        cell_d.number_format = CNY_FMT
+
+        # E: 报关费税额 = 原始账单AG列
+        cell_e = ws_summary.cell(row=row_num_s, column=5)
+        cell_e.value = f"='原始账单'!AG{orig_row}"
+        cell_e.font = DATA_FONT
+        cell_e.alignment = CENTER_ALIGN
+        cell_e.border = THIN_BORDER
+        cell_e.number_format = CNY_FMT
+
+        # F: 目的港费用合计 = 原始账单AB列
+        cell_f = ws_summary.cell(row=row_num_s, column=6)
+        cell_f.value = f"='原始账单'!AB{orig_row}"
+        cell_f.font = DATA_FONT
+        cell_f.alignment = CENTER_ALIGN
+        cell_f.border = THIN_BORDER
+        cell_f.number_format = CNY_FMT
+
+        # G: 合计 = B+C+D+E+F
+        cell_g = ws_summary.cell(row=row_num_s, column=7)
+        cell_g.value = f'=B{row_num_s}+C{row_num_s}+D{row_num_s}+E{row_num_s}+F{row_num_s}'
+        cell_g.font = DATA_FONT
+        cell_g.alignment = CENTER_ALIGN
+        cell_g.border = THIN_BORDER
+        cell_g.number_format = CNY_FMT
+
+    # 合计行
+    sr_sum = 2 + n + 1  # 空一行后写合计
+    ws_summary.merge_cells(f'A{sr_sum}:A{sr_sum}')
+    cell_sum_label = ws_summary.cell(row=sr_sum, column=1)
+    cell_sum_label.value = '合计'
+    cell_sum_label.font = BOLD_FONT
+    cell_sum_label.alignment = CENTER_ALIGN
+    cell_sum_label.border = THIN_BORDER
+
+    for ci in range(2, 8):
+        cell = ws_summary.cell(row=sr_sum, column=ci)
+        col_l = get_column_letter(ci)
+        cell.value = f'=SUM({col_l}2:{col_l}{sr_sum-2})'
+        cell.font = BOLD_FONT
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        cell.number_format = CNY_FMT
+
+    # 调整列宽
+    ws_summary.column_dimensions['A'].width = 22
+    for ci in range(2, 8):
+        ws_summary.column_dimensions[get_column_letter(ci)].width = 16
+
     # ── 保存 ──
     wb.save(output_path)
     print(f"✅ 账单已保存: {output_path}")
