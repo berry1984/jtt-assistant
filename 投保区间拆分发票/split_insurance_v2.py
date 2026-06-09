@@ -116,7 +116,8 @@ def parse_source(src_path):
     currency = str(ws.cell(24, 2).value or '').strip()
     rate = CURRENCY_RATES.get(currency, 9)
     service_name = str(ws.cell(1, 2).value or '').strip()
-    print(f'  币种: {currency} → 汇率: {rate}')
+    print(f'  币种: {currency}')
+    print(f'  投保拆分公式: 每箱RMB = 单箱子货值 × 1.1 × 8')
     print(f'  服务: {service_name}')
 
     # ── 2. 头部 Row 1-26 样式 ──
@@ -176,9 +177,9 @@ def parse_source(src_path):
             cur_group['rows'].append(r)
             cur_group['total_price'] += qty * uprice
 
-    # 计算每箱 RMB
+    # 计算每箱 RMB（按投保拆分规则：单箱子货值 × 1.1 × 8）
     for bg in box_groups:
-        bg['rmb'] = round(bg['total_price'] * rate, 2)
+        bg['rmb'] = round(bg['total_price'] * 1.1 * 8, 2)
 
     # ── 6. 合并单元格（仅头部区域） ──
     merged_cells = []
