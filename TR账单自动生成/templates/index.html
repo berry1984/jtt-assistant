@@ -209,7 +209,8 @@
 
     <div class="info-box">
       <strong>📌 流程：</strong>上传系统导出的账单(.xls) + 思锐订单列表(.xlsx) → 自动生成思锐开票账单<br>
-      <strong>📎 渠道来源：</strong>订单列表 <code>AH列(服务)</code> · FBA单号来自 <code>C列(扩展单号)</code>
+      <strong>📎 数据来源：</strong>订单列表 <code>AH列(渠道)</code> · <code>C列(FBA单号)</code> · <code>D列(件数)</code> <br>
+      <strong>📎 税率规则：</strong>税费关税(AN) = 系统税金 × AB2汇率 · 取不到则显示"后补"
     </div>
 
     <form method="post" action="/generate_sr" enctype="multipart/form-data" id="srForm">

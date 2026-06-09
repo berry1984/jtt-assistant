@@ -142,6 +142,7 @@ def read_order_list(xlsx_path):
             'country': str(ws.cell(row=r, column=35).value or '').strip(),  # AI=35 国家
             'fba':     str(ws.cell(row=r, column=3).value or '').strip(),   # C=3 扩展单号/FBA
             'weight':  ws.cell(row=r, column=10).value,                     # J=10 收费重
+            'pieces':  ws.cell(row=r, column=4).value,                      # D=4 件数
         }
     return orders
 
@@ -156,12 +157,12 @@ def get_dept_manager(country, has_fba):
     """根据国家和是否有FBA确定受益部门和业务经理"""
     if country == 'DE':
         if has_fba:
-            return '德国BFA', '温永强'
+            return '德国FBA', '温永强'
         else:
             return '德国子公司', '郑猛'
     elif country == 'GB':
         if has_fba:
-            return '英国BFA', '温永强'
+            return '英国FBA', '温永强'
         else:
             return '英国子公司', '郑猛'
     else:
@@ -311,15 +312,18 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
         fee_z = safe_float(fees.get('进口(海外)清关费', 0))
         fee_aa = safe_float(fees.get('保费', 0))
 
-        # 税金 → AN列（欧元）
+        # 税金 → AN列（欧元）按用户要求：税金*AB2
         tax_cny_raw = fees.get('税金', 0)
         try:
             tax_cny = float(tax_cny_raw) if tax_cny_raw else 0
         except (ValueError, TypeError):
             tax_cny = 0
-        if tax_cny > 0:
-            # 税金在系统账单中是人民币，需要转为欧元
-            if v2_rate and v2_rate != 0:
+        has_tax = tax_cny > 0
+        if has_tax:
+            # 税金在系统账单中是人民币，用AB2汇率转为欧元
+            if ab2_rate and ab2_rate != 0:
+                fee_an_eur = round(tax_cny * ab2_rate, 2)
+            elif v2_rate and v2_rate != 0:
                 fee_an_eur = round(tax_cny / v2_rate, 2)
             else:
                 fee_an_eur = 0
@@ -354,8 +358,10 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
             'fee_z': fee_z,    # 清关费
             'fee_aa': fee_aa,  # 保险费
             'fee_an_eur': fee_an_eur,  # VAT欧元
+            'has_tax': has_tax,       # 是否有税金
             'ext_no': info['ext_no'],
             'date': info['date'],
+            'pieces': order_info.get('pieces', '') if order_info else '',
         }
         data_rows.append(row_data)
 
@@ -387,7 +393,7 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
         # I: POD
         # J: 受益部门
         # K: 业务经理
-        # L: 件数(系统账单没有件数，留空)
+        # L: 件数(从订单列表D列取值)
         # M: 计费重
         # N: 单价
         # O: 海运费 = N*M
@@ -410,7 +416,7 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
             ('I', r['pod']),              # POD
             ('J', r['dept']),             # 受益部门
             ('K', r['manager']),          # 业务经理
-            ('L', ''),                    # 件数
+            ('L', r['pieces'] if r['pieces'] else ''),  # 件数(从订单列表D列)
             ('M', r['weight'] if r['weight'] else ''),  # 计费重
         ]
 
@@ -576,17 +582,18 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
         ws[f'AM{row_num}'].border = THIN_BORDER
         ws[f'AM{row_num}'].number_format = EUR_FMT
 
-        # AN: VAT(欧元)
-        if r['fee_an_eur'] > 0:
+        # AN: 税费关税（欧元）= 税金*AB2（取不到则显示"后补"）
+        if r['has_tax']:
             ws[f'AN{row_num}'].value = r['fee_an_eur']
+            ws[f'AN{row_num}'].number_format = EUR_FMT
         else:
-            ws[f'AN{row_num}'].value = 0
+            ws[f'AN{row_num}'].value = '后补'
+            ws[f'AN{row_num}'].number_format = TEXT_FMT
         ws[f'AN{row_num}'].font = DATA_FONT
         ws[f'AN{row_num}'].alignment = CENTER_ALIGN
         ws[f'AN{row_num}'].border = THIN_BORDER
-        ws[f'AN{row_num}'].number_format = EUR_FMT
 
-        # AO, AP, AQ: 关税/赔偿金/其他(留空)
+        # AO, AP, AQ: 税费VAT/赔偿金/其他(留空)
         for col_l in ['AO', 'AP', 'AQ']:
             cell = ws[f'{col_l}{row_num}']
             cell.value = ''
@@ -635,8 +642,27 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
         cell.font = BOLD_FONT
         cell.alignment = CENTER_ALIGN
 
+    # ── 提取月份（从运单日期中取出现最多的月份）──
+    from collections import Counter
+    bill_year, bill_month = 2026, 5
+    date_months = []
+    for info in waybills.values():
+        d = info.get('date', '')
+        if d and len(d) >= 6:
+            date_months.append(d[:6])  # YYYYMM
+    if date_months:
+        most_common = Counter(date_months).most_common(1)[0][0]
+        bill_year = int(most_common[:4])
+        bill_month = int(most_common[4:6])
     # ── 更新标题行 ──
-    ws['B1'].value = f'赛诺吉（深圳）国际货运代理有限公司2026年5月对账单'
+    ws['B1'].value = f'赛诺吉（深圳）国际货运代理有限公司{bill_year}年{bill_month}月对账单'
+
+    # ── 互换AN/AO列标题（AN→税费关税, AO→税费VAT）──
+    ws['AN3'].value = '税费关税\n（欧元）'
+    ws['AO3'].value = '税费VAT\n（欧元）'
+
+    # ── 欧元折算人民币汇率(V2)导出为空 ──
+    ws['V2'].value = None
 
     # ── 银行信息使用模板原始内容（行40-50），不做任何修改 ──
 
