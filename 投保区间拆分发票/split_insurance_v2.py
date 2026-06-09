@@ -248,14 +248,21 @@ def _get_image_data(src_path):
     return data
 
 
-def _embed_image_data(output_path, image_data):
+def _embed_image_data(output_path, image_data, kept_src_rows=None):
     """
     后处理输出 xlsx：将源文件中的图片基础设施（drawing/comments/cellimages/media）
-    复制到输出文件中，使 DISPIMG 公式或标准图片能在 WPS/Excel 中正常显示。
+    复制到输出文件中，仅保留 kept_src_rows 中指定行的图片。
+
+    参数:
+      output_path: 输出 xlsx 路径
+      image_data: _get_image_data() 返回的数据
+      kept_src_rows: set 或 list，需要保留的源文件行号；None=保留全部
     """
     if not image_data or not image_data.get('files'):
-        # 没有图片数据可处理
         return
+
+    if kept_src_rows is not None:
+        kept_src_rows = set(kept_src_rows)
 
     tmp_dir = tempfile.mkdtemp()
     try:
@@ -263,19 +270,170 @@ def _embed_image_data(output_path, image_data):
         with zipfile.ZipFile(output_path, 'r') as z:
             z.extractall(tmp_dir)
 
-        # 2. 复制所有图片相关文件
-        for rel_path, blob in image_data['files'].items():
-            # 跳过 sheet1.xml.rels（需要合并而非覆盖）
-            if rel_path == 'xl/worksheets/_rels/sheet1.xml.rels':
-                continue
-            dst = os.path.join(tmp_dir, rel_path)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst, 'wb') as f:
-                f.write(blob)
-
-        # 3. 合并 sheet1.xml.rels：将源文件中的 drawing/comments/cellimages 关系
-        #    合并到输出文件的 sheet rels 中
+        # 声明命名空间
         NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+        NS_XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+        NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
+
+        # ── 2. 过滤 drawing1.xml（按行号） ──
+        used_img_rIds = set()
+        drawing_blob = image_data['files'].get('xl/drawings/drawing1.xml')
+        if drawing_blob and kept_src_rows is not None:
+            # 解析 drawing1.xml，只保留指定行的 twoCellAnchor
+            ET.register_namespace('xdr', NS_XDR)
+            ET.register_namespace('a', NS_A)
+            ET.register_namespace('r', NS_REL)
+            ET.register_namespace('', NS_S)
+
+            draw_tree = ET.fromstring(drawing_blob)
+            # 注意 drawing1.xml 的根元素在 xdr 命名空间下
+            root_tag = draw_tree.tag
+            ns = {'xdr': NS_XDR, 'a': NS_A, 'r': NS_REL}
+            # 根可能是 xdr:wsDr 或非命名空间
+            # 使用通用的 XPath
+
+            # 遍历所有 twoCellAnchor（可能在一级子元素或任意位置）
+            # 手动迭代以便过滤
+            anchors_to_keep = []
+            for anchor in list(draw_tree):
+                # 检查是否 twoCellAnchor
+                local_tag = anchor.tag.split('}')[-1] if '}' in anchor.tag else anchor.tag
+                if local_tag not in ('twoCellAnchor', 'oneCellAnchor', 'absoluteAnchor'):
+                    continue
+
+                # 提取行号
+                from_elem = anchor.find(f'{{{NS_XDR}}}from')
+                row_to_keep = True  # 默认保留
+                if from_elem is not None:
+                    row_el = from_elem.find(f'{{{NS_XDR}}}row')
+                    if row_el is not None and row_el.text is not None:
+                        drawing_row = int(row_el.text)  # 0-indexed
+                        sheet_row = drawing_row + 1      # 转为1-indexed
+                        if sheet_row not in kept_src_rows:
+                            row_to_keep = False
+
+                if row_to_keep:
+                    anchors_to_keep.append(anchor)
+                    # 提取该 anchor 中用到的图片 rId
+                    for blip in anchor.iter(f'{{{NS_A}}}blip'):
+                        embed = blip.get(f'{{{NS_REL}}}embed', '')
+                        if embed:
+                            used_img_rIds.add(embed)
+                else:
+                    draw_tree.remove(anchor)
+
+            filtered_drawing = ET.tostring(draw_tree, xml_declaration=True, encoding='UTF-8')
+            # 写入过滤后的 drawing1.xml
+            draw_out = os.path.join(tmp_dir, 'xl', 'drawings', 'drawing1.xml')
+            os.makedirs(os.path.dirname(draw_out), exist_ok=True)
+            with open(draw_out, 'wb') as f:
+                f.write(filtered_drawing)
+        else:
+            # 不过滤：直接复制
+            for rel_path, blob in image_data['files'].items():
+                if rel_path == 'xl/worksheets/_rels/sheet1.xml.rels':
+                    continue
+                if rel_path == 'xl/drawings/drawing1.xml' and drawing_blob:
+                    continue  # 上面已处理
+                dst = os.path.join(tmp_dir, rel_path)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, 'wb') as f:
+                    f.write(blob)
+
+        # ── 3. 过滤 drawing1.xml.rels（只保留 used_img_rIds） ──
+        draw_rels_blob = image_data['files'].get('xl/drawings/_rels/drawing1.xml.rels')
+        if draw_rels_blob and kept_src_rows is not None and used_img_rIds:
+            draw_rels_root = ET.fromstring(draw_rels_blob)
+            for child in list(draw_rels_root):
+                rid = child.get('Id', '')
+                if rid not in used_img_rIds:
+                    draw_rels_root.remove(child)
+            filtered_draw_rels = ET.tostring(draw_rels_root, xml_declaration=True, encoding='UTF-8')
+            draw_rels_out = os.path.join(tmp_dir, 'xl', 'drawings', '_rels', 'drawing1.xml.rels')
+            os.makedirs(os.path.dirname(draw_rels_out), exist_ok=True)
+            with open(draw_rels_out, 'wb') as f:
+                f.write(filtered_draw_rels)
+        elif draw_rels_blob:
+            # 全部保留
+            draw_rels_out = os.path.join(tmp_dir, 'xl', 'drawings', '_rels', 'drawing1.xml.rels')
+            os.makedirs(os.path.dirname(draw_rels_out), exist_ok=True)
+            with open(draw_rels_out, 'wb') as f:
+                f.write(draw_rels_blob)
+
+        # ── 4. 过滤 comments1.xml（只保留 kept_src_rows） ──
+        comments_blob = image_data['files'].get('xl/comments1.xml')
+        if comments_blob and kept_src_rows is not None:
+            comm_tree = ET.fromstring(comments_blob)
+            # comments1.xml: <comments><authors>...</authors><commentList><comment ref="P28"...>
+            comm_list = comm_tree.find(f'{{{NS_S}}}commentList')
+            if comm_list is not None:
+                for child in list(comm_list):
+                    ref = child.get('ref', '')
+                    # 从 ref 中提取行号，如 "P28" → 28
+                    import re as _re
+                    m = _re.search(r'(\d+)$', ref)
+                    if m and int(m.group(1)) not in kept_src_rows:
+                        comm_list.remove(child)
+            filtered_comments = ET.tostring(comm_tree, xml_declaration=True, encoding='UTF-8')
+            comm_out = os.path.join(tmp_dir, 'xl', 'comments1.xml')
+            with open(comm_out, 'wb') as f:
+                f.write(filtered_comments)
+        elif comments_blob:
+            comm_out = os.path.join(tmp_dir, 'xl', 'comments1.xml')
+            os.makedirs(os.path.dirname(comm_out), exist_ok=True)
+            with open(comm_out, 'wb') as f:
+                f.write(comments_blob)
+
+        # ── 5. 复制 cellimages.xml（如果有） ──
+        ci_blob = image_data['files'].get('xl/cellimages.xml')
+        if ci_blob:
+            ci_out = os.path.join(tmp_dir, 'xl', 'cellimages.xml')
+            os.makedirs(os.path.dirname(ci_out), exist_ok=True)
+            with open(ci_out, 'wb') as f:
+                f.write(ci_blob)
+        ci_rels_blob = image_data['files'].get('xl/_rels/cellimages.xml.rels')
+        if ci_rels_blob:
+            ci_rels_out = os.path.join(tmp_dir, 'xl', '_rels', 'cellimages.xml.rels')
+            os.makedirs(os.path.dirname(ci_rels_out), exist_ok=True)
+            with open(ci_rels_out, 'wb') as f:
+                f.write(ci_rels_blob)
+
+        # ── 6. 复制 media 图片文件（只复制被引用的） ──
+        media_files = image_data.get('files', {})
+        # 如果有过滤，只复制 used_img_rIds 相关的 media 文件
+        if kept_src_rows is not None and used_img_rIds:
+            # 从 drawing1.xml.rels 找出 used rIds 对应的 media 文件路径
+            # targets 是相对于源文件 xl/drawings/drawing1.xml 的位置
+            rels_data = image_data['files'].get('xl/drawings/_rels/drawing1.xml.rels', b'')
+            if rels_data:
+                rels_root = ET.fromstring(rels_data)
+                used_media_paths = set()
+                draw_base = os.path.dirname('xl/drawings/drawing1.xml')  # → 'xl/drawings'
+                for child in rels_root:
+                    if child.get('Id', '') in used_img_rIds:
+                        target = child.get('Target', '')
+                        if target:
+                            used_media_paths.add(os.path.normpath(os.path.join(
+                                draw_base, target
+                            )))
+                for media_path in used_media_paths:
+                    if media_path in media_files:
+                        dst = os.path.join(tmp_dir, media_path)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(dst, 'wb') as f:
+                            f.write(media_files[media_path])
+        else:
+            # 全部复制
+            for rel_path, blob in media_files.items():
+                if rel_path.startswith('xl/media/') and not rel_path.endswith('/'):
+                    dst = os.path.join(tmp_dir, rel_path)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, 'wb') as f:
+                        f.write(blob)
+
+        # ── 7. 合并 sheet1.xml.rels ──
         rels_dir = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
         os.makedirs(rels_dir, exist_ok=True)
         rels_path = os.path.join(rels_dir, 'sheet1.xml.rels')
@@ -287,7 +445,6 @@ def _embed_image_data(output_path, image_data):
             rels_root = ET.Element(f'{{{NS_REL}}}Relationships')
             rels_tree = ET.ElementTree(rels_root)
 
-        # 收集输出文件中已有的关系类型
         existing_types = set()
         next_rId = 1
         for child in rels_root:
@@ -299,7 +456,6 @@ def _embed_image_data(output_path, image_data):
                     pass
             existing_types.add(child.get('Type', ''))
 
-        # 从源文件 sheet rels 中，添加输出文件缺失的图片相关关系
         IMG_REL_TYPES = {
             f'{NS_REL}/drawing',
             f'{NS_REL}/comments',
@@ -321,15 +477,12 @@ def _embed_image_data(output_path, image_data):
 
         rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
 
-        # 3.5 更新 sheet1.xml：添加 <drawing>/<comments>/<legacyDrawing> 锚点
-        #     使 WPS 知道要渲染图片
-        NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+        # ── 8. 更新 sheet1.xml 锚点 ──
         sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
         if os.path.exists(sheet_path) and image_data.get('sheet_xml_anchors'):
             sheet_tree = ET.parse(sheet_path)
             sheet_root = sheet_tree.getroot()
 
-            # 重新解析 rels 文件，构建 type → rId 映射
             type_to_rid = {}
             for child in rels_root:
                 rt = child.get('Type', '')
@@ -338,19 +491,16 @@ def _embed_image_data(output_path, image_data):
                     short_type = rt.split('/')[-1]
                     type_to_rid[short_type] = rid
 
-            # 检查 sheet1.xml 中已有的锚点标签
             existing_anchors = set()
             for child in list(sheet_root):
                 tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                 if tag in ('drawing', 'comments', 'legacyDrawing'):
                     existing_anchors.add(tag)
 
-            # 添加缺失的锚点
             for anchor in image_data.get('sheet_xml_anchors', []):
                 tag = anchor['tag']
                 if tag not in existing_anchors:
                     src_rid = anchor['rId']
-                    # 从源 rels 中找到对应的类型
                     src_type = None
                     for src_rel in image_data.get('source_sheet_rels', []):
                         if src_rel['id'] == src_rid:
@@ -362,14 +512,12 @@ def _embed_image_data(output_path, image_data):
 
             sheet_tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
 
-        # 4. 补充 Content_Types 中缺失的 Override 条目
+        # ── 9. 补充 Content_Types ──
         ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
         if os.path.exists(ct_path):
-            NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
             ct_tree = ET.parse(ct_path)
             ct_root = ct_tree.getroot()
 
-            # 补充图片扩展名 Default
             existing_exts = set()
             for child in ct_root.findall(f'{{{NS_CT}}}Default'):
                 ext = child.get('Extension', '')
@@ -383,21 +531,16 @@ def _embed_image_data(output_path, image_data):
                     el.set('Extension', ext)
                     el.set('ContentType', ctype)
 
-            # 从源文件复制缺失的 Override（cellimages, drawing, comments 等）
-            # 用 image_data 中记录的 Content_Types 补充
             if 'content_types' in image_data:
                 src_ct_root = ET.fromstring(image_data['content_types'])
-                # 收集输出文件已有的 PartName
                 existing_overrides = set()
                 for child in ct_root.findall(f'{{{NS_CT}}}Override'):
                     pn = child.get('PartName', '')
                     if pn:
                         existing_overrides.add(pn)
-
                 for child in src_ct_root.findall(f'{{{NS_CT}}}Override'):
                     pn = child.get('PartName', '')
                     ct_val = child.get('ContentType', '')
-                    # 只补充图片相关的 Override
                     is_img_related = any(
                         kw in ct_val.lower()
                         for kw in ['drawing', 'comment', 'cellimage', 'vml']
@@ -409,7 +552,7 @@ def _embed_image_data(output_path, image_data):
 
             ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
 
-        # 5. 重新打包
+        # ── 10. 重新打包 ──
         tmp_out = output_path + '.tmp'
         with zipfile.ZipFile(tmp_out, 'w', zipfile.ZIP_DEFLATED) as zout:
             for dirpath, _, filenames in os.walk(tmp_dir):
@@ -708,11 +851,15 @@ def create_range_output(src_data, range_name, box_groups, output_path):
     wb.close()
 
     # ═══════════════════════════════════════════════
-    #  7. 后处理：嵌入图片基础设施
+    #  7. 后处理：嵌入图片基础设施（仅保留当前区间的行）
     # ═══════════════════════════════════════════════
     image_data = src_data.get('image_data', {})
     if image_data:
-        _embed_image_data(output_path, image_data)
+        kept_rows = set()
+        for bg in box_groups:
+            for r in bg['rows']:
+                kept_rows.add(r)
+        _embed_image_data(output_path, image_data, kept_src_rows=kept_rows)
 
 
 # ═══════════════════════════════════════════════════════════════
