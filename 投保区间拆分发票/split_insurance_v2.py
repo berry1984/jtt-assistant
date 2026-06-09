@@ -87,13 +87,17 @@ def _normalize_box_no(box_no):
     """
     货箱编号统一格式：确保末尾数字前有 U0000 前缀。
 
-    如果箱号中已包含 "U0000"（如 FBA15...U000001），则原样保留。
-    如果箱号是纯数字（如 "1"），则转为 "U00001"。
+    若箱号已含 "U0000" → 原样保留。
+    若箱号为范围格式 "X-Y"（如 "1-3"）→ "U00001-3"。
+    若箱号为纯数字 → "U00001"。
+    若箱号已有字母前缀 → "FBA...U000001"。
     """
     s = str(box_no).strip()
-    # 已包含 U0000 → 无需处理
     if 'U0000' in s:
         return s
+    # 范围格式 "X-Y" → "U0000X-Y"
+    if re.match(r'^\d+-\d+$', s):
+        return f'U0000{s}'
     m = re.search(r'(\d+)$', s)
     if not m:
         return f'U0000{s}'
@@ -102,31 +106,67 @@ def _normalize_box_no(box_no):
     return f'{prefix}U0000{digits}'
 
 
+def _parse_box_number(box_no):
+    """
+    解析箱号，提取前缀和数字部分。
+
+    返回:
+      - 简单数字 "1" → (prefix_upto_digits, digit_int)
+      - 范围格式 "1-3" → (prefix_upto_digits, [(s, e)]) 特殊标记
+      - 复杂格式 "FBA15...U000001" → (prefix, digit_int)
+    """
+    s = str(box_no).strip()
+    # 范围格式
+    m_range = re.match(r'^(\d+)-(\d+)$', s)
+    if m_range:
+        return ('__range__', int(m_range.group(1)), int(m_range.group(2)))
+    m = re.search(r'(\d+)$', s)
+    if m:
+        return (s[:m.start()], int(m.group(1)))
+    return (s, None)
+
+
 def _calc_total_boxes(box_groups):
     """
-    箱数计算：按货箱编号前缀分组，每组内 末尾数字 max-min+1，再求和。
+    箱数计算：每行箱号各自计算箱数，再累加。
 
-    例如:
-      "FBA15A1U000001", "FBA15A1U000002", "FBA15A1U000003"  → 3-1+1 = 3
-      "FBA15B2U000020", "FBA15B2U000021", "FBA15B2U000022"  → 22-20+1 = 3
-      总箱数 = 3 + 3 = 6
+    - 范围格式 "X-Y"（如 "1-3"）→ Y-X+1 = 3
+    - 简单数字（如 "U000001"）→ 1
+    - 复杂格式（"FBA...U000001" 等）按前缀分组 max-min+1 后累加
     """
-    prefix_groups = {}  # {prefix: [digits_int, ...]}
+    total = 0
+    # 用于处理复杂格式的分组
+    complex_groups = {}
 
     for bg in box_groups:
         s = str(bg['box_no']).strip()
+
+        # 范围格式 "X-Y" → 直接算 Y-X+1
+        m_range = re.match(r'^\d+-\d+$', s)
+        if m_range:
+            parts = s.split('-')
+            total += int(parts[1]) - int(parts[0]) + 1
+            continue
+
+        # 简单数字 → 1 箱
+        if re.match(r'^\d+$', s):
+            total += 1
+            continue
+
+        # 复杂格式（带字母前缀）：按前缀分组处理
         m = re.search(r'(\d+)$', s)
         if m:
             prefix = s[:m.start()]
-            digits = int(m.group(1))
-            prefix_groups.setdefault(prefix, []).append(digits)
+            digit = int(m.group(1))
+            complex_groups.setdefault(prefix, []).append(digit)
+        else:
+            # 无法解析 → 算 1 箱
+            total += 1
 
-    if not prefix_groups:
-        return len(box_groups)
-
-    total = 0
-    for digits in prefix_groups.values():
+    # 复杂格式每组内 max-min+1
+    for digits in complex_groups.values():
         total += max(digits) - min(digits) + 1
+
     return total
 
 
