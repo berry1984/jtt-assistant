@@ -141,9 +141,12 @@ def _get_cellimages_zipdata(src_path):
                 if name.startswith('xl/media/') and not name.endswith('/'):
                     media_files.append((name, z.read(name)))
             data['media'] = media_files
-            # 记录 Content_Types 中已有的 png/jpeg 扩展名
+            # Content_Types
             ct = z.read('[Content_Types].xml')
             data['content_types'] = ct
+            # 源文件的 sheet rels（可能已包含 cellImages 关系）
+            if 'xl/worksheets/_rels/sheet1.xml.rels' in z.namelist():
+                data['sheet_rels'] = z.read('xl/worksheets/_rels/sheet1.xml.rels')
     except Exception:
         pass
     return data
@@ -193,7 +196,6 @@ def _embed_cellimages_postprocess(output_path, cellimages_data):
             ct_tree = ET.parse(ct_path)
             ct_root = ct_tree.getroot()
 
-            # 检查已注册的扩展名
             existing_exts = set()
             for child in ct_root.findall(f'{{{NS_CT}}}Default'):
                 ext = child.get('Extension', '')
@@ -208,6 +210,39 @@ def _embed_cellimages_postprocess(output_path, cellimages_data):
                     el.set('ContentType', ctype)
 
             ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
+
+        # 更新 sheet rels：添加 cellImages 关系（关键！WPS 靠此找到 cellimages.xml）
+        NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        rels_dir_path = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
+        os.makedirs(rels_dir_path, exist_ok=True)
+        rels_path = os.path.join(rels_dir_path, 'sheet1.xml.rels')
+        if os.path.exists(rels_path):
+            rels_tree = ET.parse(rels_path)
+            rels_root = rels_tree.getroot()
+        else:
+            rels_root = ET.Element(f'{{{NS_REL}}}Relationships')
+            rels_tree = ET.ElementTree(rels_root)
+
+        # 检查是否已有 cellImages 关系
+        has_cellimages_rel = False
+        next_rId = 1
+        for child in rels_root:
+            rid = child.get('Id', '')
+            if rid.startswith('rId'):
+                try:
+                    next_rId = max(next_rId, int(rid[3:]) + 1)
+                except ValueError:
+                    pass
+            if child.get('Type', '') == f'{NS_REL}/cellImages':
+                has_cellimages_rel = True
+
+        if not has_cellimages_rel:
+            new_rel = ET.SubElement(rels_root, 'Relationship')
+            new_rel.set('Id', f'rId{next_rId}')
+            new_rel.set('Type', f'{NS_REL}/cellImages')
+            new_rel.set('Target', '../cellimages.xml')
+
+        rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
 
         # 重新打包
         tmp_out = output_path + '.tmp'
