@@ -171,103 +171,103 @@ def _calc_total_boxes(box_groups):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  图片提取 + 保留（WPS cellimages.xml 格式）
+#  图片基础设施提取 + 保留（支持 cellimages + 标准 drawing 两种模式）
 # ═══════════════════════════════════════════════════════════════
 
-def _get_cellimages_zipdata(src_path):
-    """
-    从源文件提取 WPS cellimages 相关数据，供输出文件后处理使用。
+# 需要从源文件复制的图片相关路径前缀
+_IMG_INFRA_PREFIXES = [
+    'xl/cellimages.xml',
+    'xl/_rels/cellimages.xml.rels',
+    'xl/drawings/',
+    'xl/comments1.xml',
+    'xl/media/',
+    'xl/worksheets/_rels/sheet1.xml.rels',
+]
 
-    返回 dict: {'cellimages.xml': bytes, 'rels.xml': bytes, 'media': [(name, bytes), ...]}
+# Content-Type 映射（PartName → ContentType）
+# 用于补充输出文件中缺失的 Override 条目
+_IMG_CONTENT_TYPES = {
+    '/xl/cellimages.xml': 'application/vnd.openxmlformats-officedocument.spreadsheetml.cellImages+xml',
+    '/xl/drawings/drawing1.xml': 'application/vnd.openxmlformats-officedocument.drawing+xml',
+    '/xl/drawings/vmlDrawing1.vml': 'application/vnd.openxmlformats-officedocument.vmlDrawing',
+    '/xl/comments1.xml': 'application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml',
+}
+
+
+def _get_image_data(src_path):
     """
-    data = {}
+    从源文件提取所有图片基础设施数据，供输出文件后处理使用。
+
+    返回 dict:
+      - files: {relative_path: bytes}  — 需要复制的所有文件
+      - source_sheet_rels: [xml_element_dict]  — 源文件的 sheet rels 条目
+    """
+    data = {'files': {}, 'source_sheet_rels': []}
     try:
         with zipfile.ZipFile(src_path, 'r') as z:
-            if 'xl/cellimages.xml' in z.namelist():
-                data['cellimages.xml'] = z.read('xl/cellimages.xml')
-            if 'xl/_rels/cellimages.xml.rels' in z.namelist():
-                data['cellimages.xml.rels'] = z.read('xl/_rels/cellimages.xml.rels')
-            # 收集 xl/media/ 下的所有图片文件
-            media_files = []
-            for name in z.namelist():
-                if name.startswith('xl/media/') and not name.endswith('/'):
-                    media_files.append((name, z.read(name)))
-            data['media'] = media_files
-            # Content_Types
-            ct = z.read('[Content_Types].xml')
-            data['content_types'] = ct
-            # 源文件的 sheet rels（可能已包含 cellImages 关系）
-            if 'xl/worksheets/_rels/sheet1.xml.rels' in z.namelist():
-                data['sheet_rels'] = z.read('xl/worksheets/_rels/sheet1.xml.rels')
+            all_names = z.namelist()
+            for name in all_names:
+                is_infra = any(
+                    name.startswith(p) or name == p
+                    for p in _IMG_INFRA_PREFIXES
+                )
+                if is_infra and not name.endswith('/'):
+                    data['files'][name] = z.read(name)
+
+            # 解析源文件 sheet1.xml.rels，记录所有关系类型
+            rels_path = 'xl/worksheets/_rels/sheet1.xml.rels'
+            if rels_path in data['files']:
+                import xml.etree.ElementTree as ET
+                NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+                root = ET.fromstring(data['files'][rels_path])
+                for child in root:
+                    data['source_sheet_rels'].append({
+                        'id': child.get('Id', ''),
+                        'type': child.get('Type', ''),
+                        'target': child.get('Target', ''),
+                        'target_mode': child.get('TargetMode', ''),
+                    })
+
+            # 记录 Content_Types
+            if '[Content_Types].xml' in all_names:
+                data['content_types'] = z.read('[Content_Types].xml')
     except Exception:
         pass
     return data
 
 
-def _embed_cellimages_postprocess(output_path, cellimages_data):
+def _embed_image_data(output_path, image_data):
     """
-    后处理输出 xlsx：将 WPS cellimages.xml 及其图片文件复制到输出文件中，
-    使 DISPIMG 公式能在 WPS 中正常渲染图片。
+    后处理输出 xlsx：将源文件中的图片基础设施（drawing/comments/cellimages/media）
+    复制到输出文件中，使 DISPIMG 公式或标准图片能在 WPS/Excel 中正常显示。
     """
-    if not cellimages_data or 'cellimages.xml' not in cellimages_data:
+    if not image_data or not image_data.get('files'):
+        # 没有图片数据可处理
         return
 
     tmp_dir = tempfile.mkdtemp()
     try:
-        # 解压输出文件
+        # 1. 解压输出文件
         with zipfile.ZipFile(output_path, 'r') as z:
             z.extractall(tmp_dir)
 
-        # 复制 cellimages.xml
-        ci_path = os.path.join(tmp_dir, 'xl', 'cellimages.xml')
-        with open(ci_path, 'wb') as f:
-            f.write(cellimages_data['cellimages.xml'])
+        # 2. 复制所有图片相关文件
+        for rel_path, blob in image_data['files'].items():
+            # 跳过 sheet1.xml.rels（需要合并而非覆盖）
+            if rel_path == 'xl/worksheets/_rels/sheet1.xml.rels':
+                continue
+            dst = os.path.join(tmp_dir, rel_path)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'wb') as f:
+                f.write(blob)
 
-        # 复制 cellimages.xml.rels
-        if 'cellimages.xml.rels' in cellimages_data:
-            rels_dir = os.path.join(tmp_dir, 'xl', '_rels')
-            os.makedirs(rels_dir, exist_ok=True)
-            rels_path = os.path.join(rels_dir, 'cellimages.xml.rels')
-            with open(rels_path, 'wb') as f:
-                f.write(cellimages_data['cellimages.xml.rels'])
-
-        # 复制 xl/media/ 图片文件
-        if 'media' in cellimages_data:
-            media_dir = os.path.join(tmp_dir, 'xl', 'media')
-            os.makedirs(media_dir, exist_ok=True)
-            for name, data in cellimages_data['media']:
-                dst = os.path.join(tmp_dir, name)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                with open(dst, 'wb') as f:
-                    f.write(data)
-
-        # 补充 Content_Types 中缺少的图片类型
-        if 'content_types' in cellimages_data:
-            NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
-            ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
-            ct_tree = ET.parse(ct_path)
-            ct_root = ct_tree.getroot()
-
-            existing_exts = set()
-            for child in ct_root.findall(f'{{{NS_CT}}}Default'):
-                ext = child.get('Extension', '')
-                if ext:
-                    existing_exts.add(ext.lower())
-
-            needed = {'png': 'image/png', 'jpeg': 'image/jpeg', 'jpg': 'image/jpeg'}
-            for ext, ctype in needed.items():
-                if ext not in existing_exts:
-                    el = ET.SubElement(ct_root, f'{{{NS_CT}}}Default')
-                    el.set('Extension', ext)
-                    el.set('ContentType', ctype)
-
-            ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
-
-        # 更新 sheet rels：添加 cellImages 关系（关键！WPS 靠此找到 cellimages.xml）
+        # 3. 合并 sheet1.xml.rels：将源文件中的 drawing/comments/cellimages 关系
+        #    合并到输出文件的 sheet rels 中
         NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
-        rels_dir_path = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
-        os.makedirs(rels_dir_path, exist_ok=True)
-        rels_path = os.path.join(rels_dir_path, 'sheet1.xml.rels')
+        rels_dir = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
+        os.makedirs(rels_dir, exist_ok=True)
+        rels_path = os.path.join(rels_dir, 'sheet1.xml.rels')
+
         if os.path.exists(rels_path):
             rels_tree = ET.parse(rels_path)
             rels_root = rels_tree.getroot()
@@ -275,8 +275,8 @@ def _embed_cellimages_postprocess(output_path, cellimages_data):
             rels_root = ET.Element(f'{{{NS_REL}}}Relationships')
             rels_tree = ET.ElementTree(rels_root)
 
-        # 检查是否已有 cellImages 关系
-        has_cellimages_rel = False
+        # 收集输出文件中已有的关系类型
+        existing_types = set()
         next_rId = 1
         for child in rels_root:
             rid = child.get('Id', '')
@@ -285,18 +285,78 @@ def _embed_cellimages_postprocess(output_path, cellimages_data):
                     next_rId = max(next_rId, int(rid[3:]) + 1)
                 except ValueError:
                     pass
-            if child.get('Type', '') == f'{NS_REL}/cellImages':
-                has_cellimages_rel = True
+            existing_types.add(child.get('Type', ''))
 
-        if not has_cellimages_rel:
-            new_rel = ET.SubElement(rels_root, 'Relationship')
-            new_rel.set('Id', f'rId{next_rId}')
-            new_rel.set('Type', f'{NS_REL}/cellImages')
-            new_rel.set('Target', '../cellimages.xml')
+        # 从源文件 sheet rels 中，添加输出文件缺失的图片相关关系
+        IMG_REL_TYPES = {
+            f'{NS_REL}/drawing',
+            f'{NS_REL}/comments',
+            f'{NS_REL}/vmlDrawing',
+            f'{NS_REL}/cellImages',
+        }
+
+        for src_rel in image_data.get('source_sheet_rels', []):
+            rel_type = src_rel['type']
+            if rel_type in IMG_REL_TYPES and rel_type not in existing_types:
+                new_rel = ET.SubElement(rels_root, 'Relationship')
+                new_rel.set('Id', f'rId{next_rId}')
+                new_rel.set('Type', rel_type)
+                new_rel.set('Target', src_rel['target'])
+                if src_rel.get('target_mode'):
+                    new_rel.set('TargetMode', src_rel['target_mode'])
+                next_rId += 1
+                existing_types.add(rel_type)
 
         rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
 
-        # 重新打包
+        # 4. 补充 Content_Types 中缺失的 Override 条目
+        ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
+        if os.path.exists(ct_path):
+            NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
+            ct_tree = ET.parse(ct_path)
+            ct_root = ct_tree.getroot()
+
+            # 补充图片扩展名 Default
+            existing_exts = set()
+            for child in ct_root.findall(f'{{{NS_CT}}}Default'):
+                ext = child.get('Extension', '')
+                if ext:
+                    existing_exts.add(ext.lower())
+            needed_exts = {'png': 'image/png', 'jpeg': 'image/jpeg',
+                           'jpg': 'image/jpeg', 'JPG': 'image/jpeg'}
+            for ext, ctype in needed_exts.items():
+                if ext not in existing_exts:
+                    el = ET.SubElement(ct_root, f'{{{NS_CT}}}Default')
+                    el.set('Extension', ext)
+                    el.set('ContentType', ctype)
+
+            # 从源文件复制缺失的 Override（cellimages, drawing, comments 等）
+            # 用 image_data 中记录的 Content_Types 补充
+            if 'content_types' in image_data:
+                src_ct_root = ET.fromstring(image_data['content_types'])
+                # 收集输出文件已有的 PartName
+                existing_overrides = set()
+                for child in ct_root.findall(f'{{{NS_CT}}}Override'):
+                    pn = child.get('PartName', '')
+                    if pn:
+                        existing_overrides.add(pn)
+
+                for child in src_ct_root.findall(f'{{{NS_CT}}}Override'):
+                    pn = child.get('PartName', '')
+                    ct_val = child.get('ContentType', '')
+                    # 只补充图片相关的 Override
+                    is_img_related = any(
+                        kw in ct_val.lower()
+                        for kw in ['drawing', 'comment', 'cellimage', 'vml']
+                    )
+                    if is_img_related and pn not in existing_overrides:
+                        override = ET.SubElement(ct_root, f'{{{NS_CT}}}Override')
+                        override.set('PartName', pn)
+                        override.set('ContentType', ct_val)
+
+            ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
+
+        # 5. 重新打包
         tmp_out = output_path + '.tmp'
         with zipfile.ZipFile(tmp_out, 'w', zipfile.ZIP_DEFLATED) as zout:
             for dirpath, _, filenames in os.walk(tmp_dir):
@@ -308,7 +368,9 @@ def _embed_cellimages_postprocess(output_path, cellimages_data):
         shutil.move(tmp_out, output_path)
 
     except Exception as e:
-        print(f'  ⚠️ 图片后处理失败: {e}')
+        print(f'  ⚠️ 图片基础设施复制失败: {e}')
+        import traceback
+        traceback.print_exc()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -397,10 +459,11 @@ def parse_source(src_path):
     for bg in box_groups:
         bg['rmb'] = round(bg['total_price'] * rate * 1.1, 2)
 
-    # ── 提取 cellimages 数据（供后处理） ──
-    cellimages_data = _get_cellimages_zipdata(src_path)
-    if cellimages_data:
-        print(f'  提取图片: {len(cellimages_data.get("media", []))} 张')
+    # ── 提取图片基础设施数据（供后处理） ──
+    image_data = _get_image_data(src_path)
+    file_count = len(image_data.get('files', {}))
+    if file_count:
+        print(f'  提取图片基础设施: {file_count} 个文件')
 
     # ── 合并单元格（头部） ──
     merged_cells = []
@@ -447,7 +510,7 @@ def parse_source(src_path):
         'data_styles': data_styles,
         'data_rows': data_rows,
         'box_groups': box_groups,
-        'cellimages_data': cellimages_data,
+        'image_data': image_data,
         'merged_cells': merged_cells,
         'col_widths': col_widths,
         'row_heights': row_heights,
@@ -592,11 +655,11 @@ def create_range_output(src_data, range_name, box_groups, output_path):
     wb.close()
 
     # ═══════════════════════════════════════════════
-    #  7. 后处理：嵌入 WPS cellimages 图片
+    #  7. 后处理：嵌入图片基础设施
     # ═══════════════════════════════════════════════
-    cellimages_data = src_data.get('cellimages_data', {})
-    if cellimages_data:
-        _embed_cellimages_postprocess(output_path, cellimages_data)
+    image_data = src_data.get('image_data', {})
+    if image_data:
+        _embed_image_data(output_path, image_data)
 
 
 # ═══════════════════════════════════════════════════════════════
