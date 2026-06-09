@@ -209,9 +209,10 @@ def parse_source(src_path):
 
     # ── 1. 提取元信息 ──
     currency = str(ws.cell(24, 2).value or '').strip()
+    rate = CURRENCY_RATES.get(currency, 9)
     service_name = str(ws.cell(1, 2).value or '').strip()
-    print(f'  币种: {currency}')
-    print(f'  投保拆分公式: 每箱RMB = 单箱子货值 × 1.1 × 8')
+    print(f'  币种: {currency} → 汇率: {rate}')
+    print(f'  投保拆分公式: 每箱RMB = 单箱子货值 × 汇率({rate}) × 1.1')
     print(f'  服务: {service_name}')
 
     # ── 2. 头部 Row 1-26 样式 ──
@@ -262,9 +263,9 @@ def parse_source(src_path):
             cur_group['rows'].append(r)
             cur_group['total_price'] += qty * uprice
 
-    # 计算每箱 RMB（统一公式：单箱子货值 × 1.1 × 8）
+    # 计算每箱 RMB（每箱RMB = 单箱子货值 × 汇率 × 1.1）
     for bg in box_groups:
-        bg['rmb'] = round(bg['total_price'] * 1.1 * 8, 2)
+        bg['rmb'] = round(bg['total_price'] * rate * 1.1, 2)
 
     # ── 6. 提取图片 ──
     wps_images_all = _extract_images(src_path)
@@ -310,6 +311,7 @@ def parse_source(src_path):
 
     return {
         'currency': currency,
+        'rate': rate,
         'service_name': service_name,
         'header_styles': header_styles,
         'col_header_styles': col_header_styles,
