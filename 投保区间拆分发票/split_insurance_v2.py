@@ -202,7 +202,7 @@ def _get_image_data(src_path):
       - files: {relative_path: bytes}  — 需要复制的所有文件
       - source_sheet_rels: [xml_element_dict]  — 源文件的 sheet rels 条目
     """
-    data = {'files': {}, 'source_sheet_rels': []}
+    data = {'files': {}, 'source_sheet_rels': [], 'sheet_xml_anchors': []}
     try:
         with zipfile.ZipFile(src_path, 'r') as z:
             all_names = z.namelist()
@@ -227,6 +227,18 @@ def _get_image_data(src_path):
                         'target': child.get('Target', ''),
                         'target_mode': child.get('TargetMode', ''),
                     })
+
+            # 解析源文件 sheet1.xml，提取 <drawing>/<comments>/<legacyDrawing> 锚点
+            if 'xl/worksheets/sheet1.xml' in all_names:
+                NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+                sheet_root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+                for child in sheet_root:
+                    tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                    if tag in ('drawing', 'comments', 'legacyDrawing'):
+                        data['sheet_xml_anchors'].append({
+                            'tag': tag,
+                            'rId': child.get(f'{{{NS_R}}}id', '') or child.get('r:id', ''),
+                        })
 
             # 记录 Content_Types
             if '[Content_Types].xml' in all_names:
@@ -308,6 +320,47 @@ def _embed_image_data(output_path, image_data):
                 existing_types.add(rel_type)
 
         rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
+
+        # 3.5 更新 sheet1.xml：添加 <drawing>/<comments>/<legacyDrawing> 锚点
+        #     使 WPS 知道要渲染图片
+        NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+        sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
+        if os.path.exists(sheet_path) and image_data.get('sheet_xml_anchors'):
+            sheet_tree = ET.parse(sheet_path)
+            sheet_root = sheet_tree.getroot()
+
+            # 重新解析 rels 文件，构建 type → rId 映射
+            type_to_rid = {}
+            for child in rels_root:
+                rt = child.get('Type', '')
+                rid = child.get('Id', '')
+                if rt and rid:
+                    short_type = rt.split('/')[-1]
+                    type_to_rid[short_type] = rid
+
+            # 检查 sheet1.xml 中已有的锚点标签
+            existing_anchors = set()
+            for child in list(sheet_root):
+                tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                if tag in ('drawing', 'comments', 'legacyDrawing'):
+                    existing_anchors.add(tag)
+
+            # 添加缺失的锚点
+            for anchor in image_data.get('sheet_xml_anchors', []):
+                tag = anchor['tag']
+                if tag not in existing_anchors:
+                    src_rid = anchor['rId']
+                    # 从源 rels 中找到对应的类型
+                    src_type = None
+                    for src_rel in image_data.get('source_sheet_rels', []):
+                        if src_rel['id'] == src_rid:
+                            src_type = src_rel['type'].split('/')[-1]
+                            break
+                    if src_type and src_type in type_to_rid:
+                        el = ET.SubElement(sheet_root, f'{{{NS_S}}}{tag}')
+                        el.set(f'{{{NS_REL}}}id', type_to_rid[src_type])
+
+            sheet_tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
 
         # 4. 补充 Content_Types 中缺失的 Override 条目
         ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
