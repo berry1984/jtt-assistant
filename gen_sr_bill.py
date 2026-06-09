@@ -222,25 +222,6 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
         ab2_rate = ws['AB2'].value or 0.1282  # CNY→EUR
 
     # ── 清除旧数据（保留标题行1-3和汇率行2）──
-    # 0. 先保存银行信息(行40-50)的值和行高，后续重新定位到合计行下方
-    bank_info = {'rows': {}, 'merges': []}
-    for r in range(40, 51):
-        row_data = {}
-        for c in range(1, 12):  # A~K列
-            cell = ws.cell(row=r, column=c)
-            if cell.value is not None:
-                row_data[c] = cell.value
-        bank_info['rows'][r] = {
-            'height': ws.row_dimensions[r].height,
-            'cells': row_data,
-        }
-    for mr in list(ws.merged_cells.ranges):
-        if 40 <= mr.min_row <= 50 or 40 <= mr.max_row <= 50:
-            bank_info['merges'].append({
-                'min_row': mr.min_row, 'max_row': mr.max_row,
-                'min_col': mr.min_col, 'max_col': mr.max_col,
-            })
-
     # 1. 取消合并数据区域的合并单元格
     for mr in list(ws.merged_cells.ranges):
         if 4 <= mr.min_row < 40:
@@ -683,49 +664,10 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
     # ── 欧元折算人民币汇率(V2)导出为空 ──
     ws['V2'].value = None
 
-    # ── 重新定位银行信息：合计行下方空一行 ──
-    # 先清除模板中旧的银行信息区域
-    for mr in list(ws.merged_cells.ranges):
-        if 40 <= mr.min_row <= 60 or 40 <= mr.max_row <= 60:
-            ws.unmerge_cells(str(mr))
-    for r in range(40, 60):
-        for c in range(1, 12):
-            cell = ws.cell(row=r, column=c)
-            cell.value = None
-            cell.border = Border()
-
-    # 在合计行(sr)下方空一行后写入银行信息
-    bank_start = sr + 2  # sr=合计行, sr+1=空行, sr+2=银行信息
-    # 标题行(40=国内账号,45=外币账户)用粗体，内容行用普通字体
-    header_rows = {40, 45}
-    for orig_r in range(40, 51):
-        new_r = bank_start + (orig_r - 40)
-        info = bank_info['rows'].get(orig_r)
-        if not info:
-            continue
-        ws.row_dimensions[new_r].height = info['height']
-        is_header = orig_r in header_rows
-        font = BOLD_FONT if is_header else DATA_FONT
-        for c, val in info['cells'].items():
-            new_cell = ws.cell(row=new_r, column=c)
-            new_cell.value = val
-            new_cell.font = font
-            new_cell.alignment = CENTER_ALIGN
-            new_cell.border = THIN_BORDER
-            new_cell.number_format = TEXT_FMT
-
-    # 重新建立合并单元格
-    for m in bank_info['merges']:
-        offset = bank_start - 40
-        new_range = f'{get_column_letter(m["min_col"])}{m["min_row"] + offset}:' \
-                    f'{get_column_letter(m["max_col"])}{m["max_row"] + offset}'
-        ws.merge_cells(new_range)
-
-    # 删除银行信息后多余的空白行
-    bank_end = bank_start + 10  # 银行信息行40-50，共11行
-    delete_start = bank_end + 1
-    if ws.max_row >= delete_start:
-        ws.delete_rows(delete_start, ws.max_row - delete_start + 1)
+    # ── 删除合计行和国内账号之间多余的空白行，保留1行空白 ──
+    # 合计行在sr，国内账号在行40，sr+1保留为空行，删除sr+2~39行
+    if sr + 2 <= 39:
+        ws.delete_rows(sr + 2, 39 - (sr + 1))
 
     # ── 创建"运费合计"汇总Sheet ──
     ws_summary = wb.create_sheet(title='运费合计')
