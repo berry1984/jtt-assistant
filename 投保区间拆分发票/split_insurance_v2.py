@@ -104,18 +104,30 @@ def _normalize_box_no(box_no):
 
 def _calc_total_boxes(box_groups):
     """
-    箱数 = 末尾数字最大值 - 末尾数字最小值 + 1
+    箱数计算：按货箱编号前缀分组，每组内 末尾数字 max-min+1，再求和。
 
-    从所有箱号中提取尾部数字序号，计算涵盖的箱数范围。
+    例如:
+      "FBA15A1U000001", "FBA15A1U000002", "FBA15A1U000003"  → 3-1+1 = 3
+      "FBA15B2U000020", "FBA15B2U000021", "FBA15B2U000022"  → 22-20+1 = 3
+      总箱数 = 3 + 3 = 6
     """
-    nums = []
+    prefix_groups = {}  # {prefix: [digits_int, ...]}
+
     for bg in box_groups:
-        m = re.search(r'(\d+)$', str(bg['box_no']).strip())
+        s = str(bg['box_no']).strip()
+        m = re.search(r'(\d+)$', s)
         if m:
-            nums.append(int(m.group(1)))
-    if not nums:
+            prefix = s[:m.start()]
+            digits = int(m.group(1))
+            prefix_groups.setdefault(prefix, []).append(digits)
+
+    if not prefix_groups:
         return len(box_groups)
-    return max(nums) - min(nums) + 1
+
+    total = 0
+    for digits in prefix_groups.values():
+        total += max(digits) - min(digits) + 1
+    return total
 
 
 # ═══════════════════════════════════════════════════════════════
