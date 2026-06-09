@@ -667,7 +667,25 @@ def generate_bill(waybills, template_path, output_path, order_list=None, ab2_rat
     # ── 删除合计行和国内账号之间多余的空白行，保留1行空白 ──
     # 合计行在sr，国内账号在行40，sr+1保留为空行，删除sr+2~39行
     if sr + 2 <= 39:
-        ws.delete_rows(sr + 2, 39 - (sr + 1))
+        # 先保存银行信息区域(行40+)的合并单元格，delete_rows不会自动调整合并单元格
+        deleted_count = 39 - (sr + 1)  # 删除的行数
+        bank_merges = []
+        for mr in list(ws.merged_cells.ranges):
+            if mr.min_row >= 40:
+                bank_merges.append({
+                    'min_row': mr.min_row, 'max_row': mr.max_row,
+                    'min_col': mr.min_col, 'max_col': mr.max_col,
+                })
+                ws.unmerge_cells(str(mr))
+        # 执行删除
+        ws.delete_rows(sr + 2, deleted_count)
+        # 重新建立合并单元格（减去偏移量）
+        for m in bank_merges:
+            new_min = m['min_row'] - deleted_count
+            new_max = m['max_row'] - deleted_count
+            new_range = f'{get_column_letter(m["min_col"])}{new_min}:' \
+                        f'{get_column_letter(m["max_col"])}{new_max}'
+            ws.merge_cells(new_range)
 
     # ── 创建"运费合计"汇总Sheet ──
     ws_summary = wb.create_sheet(title='运费合计')
