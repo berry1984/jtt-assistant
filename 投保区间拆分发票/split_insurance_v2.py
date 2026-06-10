@@ -318,13 +318,37 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
                 if row_to_keep and drawing_row is not None:
                     # ── 重新映射行号：计算该行在输出文件中的新位置 ──
                     sorted_kept = sorted(kept_src_rows)
-                    # sheet_row 是源文件的1-indexed行号
                     src_sheet_row = drawing_row + 1
                     if src_sheet_row in sorted_kept:
                         new_index = sorted_kept.index(src_sheet_row)
-                        new_sheet_row = DATA_START_ROW + new_index  # 输出文件的1-indexed行号
-                        new_drawing_row = new_sheet_row - 1          # 转回0-indexed
+                        new_sheet_row = DATA_START_ROW + new_index
+                        new_drawing_row = new_sheet_row - 1
+                        delta = new_drawing_row - drawing_row
+
+                        # 更新 from->row
                         row_el.text = str(new_drawing_row)
+
+                        # 同时更新 to->row（保持图片高度不变）
+                        to_elem = anchor.find(f'{{{NS_XDR}}}to')
+                        if to_elem is not None:
+                            to_row_el = to_elem.find(f'{{{NS_XDR}}}row')
+                            if to_row_el is not None and to_row_el.text is not None:
+                                old_to_row = int(to_row_el.text)
+                                to_row_el.text = str(old_to_row + delta)
+
+                        # 也更新 oneCellAnchor 的 col/row 偏移（如果有）
+                        for child in anchor:
+                            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            if tag in ('from', 'to'):
+                                r_el = child.find(f'{{{NS_XDR}}}row')
+                                if r_el is not None and r_el.text is not None:
+                                    # 减少重复：from 已经更新过了
+                                    if child is not from_elem and child is not to_elem:
+                                        try:
+                                            old_row = int(r_el.text)
+                                            r_el.text = str(old_row + delta)
+                                        except ValueError:
+                                            pass
 
                 if row_to_keep:
                     anchors_to_keep.append(anchor)
