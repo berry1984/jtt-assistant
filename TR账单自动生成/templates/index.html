@@ -144,7 +144,7 @@
   <button class="tab-btn {% if active_tab == 'picking' %}active{% endif %}"
           onclick="switchTab('picking')">
     📦 拣货数据
-    <span class="badge">自动填D-I列</span>
+    <span class="badge">发票+系统导出</span>
   </button>
   <button class="tab-btn {% if active_tab == 'insurance' %}active{% endif %}"
           onclick="switchTab('insurance')">
@@ -285,22 +285,35 @@
   <div class="tab-content {% if active_tab == 'picking' %}active{% endif %}" id="tab-picking">
 
     <div class="info-box">
-      <strong>📌 功能：</strong>上传空白拣货数据表，自动填充 D(高度) E(宽度) F(长度) G(重量) H(材积重) I(收费重) 列<br>
-      <strong>📎 规则：</strong>根据品名+客户尺寸匹配历史数据 → 取系统历史拣货数据 → 计算材积重(H=D×E×F/6000)和收费重(I=max(G,H))
+      <strong>📌 功能：</strong>上传<strong>发票</strong> + <strong>系统导出拣货数据</strong>，自动生成<strong>内部拣货数据参考值</strong><br>
+      <strong>📎 规则：</strong>
+      ① 发票货箱编号 → FBA ID → 匹配系统导出运单号(SO号)<br>
+      ② 品名+重量尺寸 → 匹配箱规历史数据库 → 取标准箱规参考值<br>
+      ③ 自动填充公式列(材积重/周长差异/总实重/计费重等)
     </div>
 
     <form method="post" action="/picking_export" enctype="multipart/form-data" id="pickingForm">
       <div class="form-group">
-        <label>拣货数据文件 <small>(.xlsx，从运通系统导出的空白拣货表)</small></label>
+        <label>发票文件 <small>(.xlsx，含货箱编号+重量尺寸+品名)</small></label>
         <div class="file-input-wrapper" id="pw1">
-          <input type="file" name="picking_file" accept=".xlsx" required
+          <input type="file" name="picking_invoice" accept=".xlsx" required
                  onchange="updateLabel(this, 'pw1')">
-          <div class="icon">📦</div>
-          <div class="hint">上传「测试数据：导出拣货数据」文件</div>
+          <div class="icon">📄</div>
+          <div class="hint">上传发票文件</div>
           <div class="filename"></div>
         </div>
       </div>
-      <button type="submit" class="btn btn-primary" id="pickingBtn">导出拣货数据</button>
+      <div class="form-group">
+        <label>系统导出拣货数据 <small>(.xlsx，含运单号+扩展箱号)</small></label>
+        <div class="file-input-wrapper" id="pw2">
+          <input type="file" name="picking_system" accept=".xlsx" required
+                 onchange="updateLabel(this, 'pw2')">
+          <div class="icon">📊</div>
+          <div class="hint">上传系统导出拣货数据</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="pickingBtn">生成拣货数据参考值</button>
     </form>
   </div>
 
