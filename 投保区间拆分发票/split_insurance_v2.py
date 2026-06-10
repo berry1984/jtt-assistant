@@ -306,6 +306,7 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
                 # 提取行号
                 from_elem = anchor.find(f'{{{NS_XDR}}}from')
                 row_to_keep = True  # 默认保留
+                drawing_row = None
                 if from_elem is not None:
                     row_el = from_elem.find(f'{{{NS_XDR}}}row')
                     if row_el is not None and row_el.text is not None:
@@ -313,6 +314,17 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
                         sheet_row = drawing_row + 1      # 转为1-indexed
                         if sheet_row not in kept_src_rows:
                             row_to_keep = False
+
+                if row_to_keep and drawing_row is not None:
+                    # ── 重新映射行号：计算该行在输出文件中的新位置 ──
+                    sorted_kept = sorted(kept_src_rows)
+                    # sheet_row 是源文件的1-indexed行号
+                    src_sheet_row = drawing_row + 1
+                    if src_sheet_row in sorted_kept:
+                        new_index = sorted_kept.index(src_sheet_row)
+                        new_sheet_row = DATA_START_ROW + new_index  # 输出文件的1-indexed行号
+                        new_drawing_row = new_sheet_row - 1          # 转回0-indexed
+                        row_el.text = str(new_drawing_row)
 
                 if row_to_keep:
                     anchors_to_keep.append(anchor)
@@ -362,19 +374,28 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
             with open(draw_rels_out, 'wb') as f:
                 f.write(draw_rels_blob)
 
-        # ── 4. 过滤 comments1.xml（只保留 kept_src_rows） ──
+        # ── 4. 过滤 comments1.xml（只保留 kept_src_rows，并重映射行号） ──
         comments_blob = image_data['files'].get('xl/comments1.xml')
         if comments_blob and kept_src_rows is not None:
             comm_tree = ET.fromstring(comments_blob)
-            # comments1.xml: <comments><authors>...</authors><commentList><comment ref="P28"...>
             comm_list = comm_tree.find(f'{{{NS_S}}}commentList')
             if comm_list is not None:
+                sorted_kept = sorted(kept_src_rows)
                 for child in list(comm_list):
                     ref = child.get('ref', '')
-                    # 从 ref 中提取行号，如 "P28" → 28
-                    import re as _re
-                    m = _re.search(r'(\d+)$', ref)
-                    if m and int(m.group(1)) not in kept_src_rows:
+                    m = re.search(r'(\d+)$', ref)
+                    if m:
+                        src_row = int(m.group(1))
+                        if src_row not in kept_src_rows:
+                            comm_list.remove(child)
+                        else:
+                            # 重映射到输出文件行号
+                            new_index = sorted_kept.index(src_row)
+                            new_row = DATA_START_ROW + new_index
+                            col_letter = ref.rstrip('0123456789')
+                            child.set('ref', f'{col_letter}{new_row}')
+                    else:
+                        # 无行号 → 删除
                         comm_list.remove(child)
             filtered_comments = ET.tostring(comm_tree, xml_declaration=True, encoding='UTF-8')
             comm_out = os.path.join(tmp_dir, 'xl', 'comments1.xml')
@@ -386,24 +407,30 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
             with open(comm_out, 'wb') as f:
                 f.write(comments_blob)
 
-        # ── 5. 过滤 cellimages.xml（如果有，按 cellRef 行号） ──
+        # ── 5. 过滤 cellimages.xml（如果有，按 cellRef 行号过滤+重映射） ──
         ci_blob = image_data['files'].get('xl/cellimages.xml')
         ci_used_rIds = set()
         if ci_blob:
             ci_tree = ET.fromstring(ci_blob)
-            # cellimages.xml 根元素是 <cellImages>
             ci_root = ci_tree
-            cells_to_keep = []
+            sorted_kept = sorted(kept_src_rows) if kept_src_rows else []
             for ci_elem in list(ci_root):
                 cell_ref = ci_elem.get('cellRef', '')
-                # 从 cellRef 提取行号，如 "P28" → 28
                 m = re.search(r'(\d+)$', cell_ref)
                 if m:
-                    sheet_row = int(m.group(1))
-                    if kept_src_rows is not None and sheet_row not in kept_src_rows:
+                    src_row = int(m.group(1))
+                    if kept_src_rows is not None and src_row not in kept_src_rows:
                         ci_root.remove(ci_elem)
                         continue
-                cells_to_keep.append(ci_elem)
+                    # 重映射到输出文件行号
+                    if kept_src_rows is not None:
+                        new_index = sorted_kept.index(src_row)
+                        new_row = DATA_START_ROW + new_index
+                        col_letter = cell_ref.rstrip('0123456789')
+                        ci_elem.set('cellRef', f'{col_letter}{new_row}')
+                elif kept_src_rows is not None:
+                    ci_root.remove(ci_elem)
+                    continue
                 r_id = ci_elem.get('rId', '')
                 if r_id:
                     ci_used_rIds.add(r_id)
