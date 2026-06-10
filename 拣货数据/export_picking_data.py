@@ -31,6 +31,7 @@ DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(DATA_DIR, "箱规历史数据库.xlsx")
 TEMPLATE_FILE = os.path.join(DATA_DIR, "内部拣货数据参考值模版.xlsx")
 
+QUOTATION_FILE = os.path.join(DATA_DIR, "报价表.xlsx")
 DEFAULT_COUNTRY_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
 # ── 辅助函数 ──
@@ -183,6 +184,43 @@ def _to_float(v):
         return None
 
 
+def parse_quotation(filepath):
+    """解析报价表，返回 {(service, warehouse): {e_price, f_price, supplier_ch}} 映射
+
+    报价表格式：
+        A列=物流渠道, B列=后台仓库, C列=应收单价, G列=供应商渠道, H列=应付单价
+    """
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    # 查找第一个有数据的 sheet（排除空表）
+    ws = None
+    for sn in wb.sheetnames:
+        s = wb[sn]
+        if s.max_row >= 3 and s.max_column >= 8:
+            ws = s
+            break
+    if ws is None:
+        wb.close()
+        return {}
+    quotation = {}
+    for r in range(2, ws.max_row + 1):
+        service = str(ws.cell(row=r, column=1).value or '').strip()
+        warehouse = str(ws.cell(row=r, column=2).value or '').strip()
+        if not service or not warehouse:
+            continue
+        e_price = _to_float(ws.cell(row=r, column=3).value)
+        f_price = _to_float(ws.cell(row=r, column=8).value)   # H列=应付单价
+        supplier_ch = str(ws.cell(row=r, column=7).value or '').strip()  # G列=供应商渠道
+        quotation[(service, warehouse)] = {
+            'e_price': e_price if e_price is not None else '',
+            'f_price': f_price if f_price is not None else '',
+            'supplier_ch': supplier_ch,
+        }
+    wb.close()
+    return quotation
+
+
 def find_history_match(records, name, weight, length, width, height):
     """在箱规历史数据库中查找匹配记录，返回 {rw, rl, rwid, rh} 或 None
 
@@ -265,17 +303,21 @@ def parse_invoice_merge(invoice_files):
 # ── 输出生成 ──
 
 def generate_picking_output(invoice_file, system_file, output_path,
-                              history_file=None, template_file=None):
+                              history_file=None, template_file=None,
+                              quotation_file=None):
     """核心入口：生成内部拣货数据参考值"""
     if history_file is None:
         history_file = HISTORY_FILE
     if template_file is None:
         template_file = TEMPLATE_FILE
+    if quotation_file is None:
+        quotation_file = QUOTATION_FILE
 
     # ── 解析输入 ──
     data_rows, service, warehouse = parse_invoice(invoice_file)
     prefix_to_so = parse_system_export(system_file)
     history_records = parse_history(history_file)
+    quotation_data = parse_quotation(quotation_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -283,6 +325,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
     print(f"  📄 发票数据: {len(data_rows)} 行")
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
+    print(f"  💰 报价单: {len(quotation_data)} 条")
 
     # ── 构建输出行数据 ──
     output_rows = []
@@ -301,14 +344,18 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
+        # 从报价单查找 E/F/G
+        q_key = (service, warehouse)
+        q_info = quotation_data.get(q_key, {})
+
         out = {
             'so_no': so_no,
             'service': service,
             'country': country_from_warehouse(warehouse),
             'warehouse': warehouse,
-            'e_price': '',    # 手动输入
-            'f_price': '',    # 手动输入
-            'supplier_ch': '', # 手动输入
+            'e_price': q_info.get('e_price', ''),
+            'f_price': q_info.get('f_price', ''),
+            'supplier_ch': q_info.get('supplier_ch', ''),
             'ship_name': '',  # 手动输入
             'customs': '',    # 手动输入
             'fba_id': fba_id,
@@ -375,6 +422,10 @@ def _write_output_to_template(output_rows, template_file, output_path):
         ws.cell(row=start_row, column=4).value = group[0]['warehouse']
         for row_data in group:
             r = current_row
+            # E列=应收单价, F列=应付单价, G列=供应商渠道（从报价单读取）
+            ws.cell(row=r, column=5).value = row_data.get('e_price', '')
+            ws.cell(row=r, column=6).value = row_data.get('f_price', '')
+            ws.cell(row=r, column=7).value = row_data.get('supplier_ch', '')
             ws.cell(row=r, column=10).value = row_data['fba_id']
             ws.cell(row=r, column=11).value = row_data['cn_name']
             ws.cell(row=r, column=13).value = row_data['box_count']
@@ -383,6 +434,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
             ws.cell(row=r, column=16).value = row_data['width']
             ws.cell(row=r, column=17).value = row_data['height']
             ws.cell(row=r, column=18).value = f'=O{r}*P{r}*Q{r}/6000'
+            ws.cell(row=r, column=18).number_format = '#,##0.00'
             ws.cell(row=r, column=19).value = f'=R{r}-Z{r}'
             ws.cell(row=r, column=20).value = f'=O{r}+P{r}+Q{r}-Y{r}-X{r}-W{r}'
             v_val, w_val, x_val, y_val = row_data['ref_w'], row_data['ref_l'], row_data['ref_wid'], row_data['ref_h']
@@ -397,9 +449,11 @@ def _write_output_to_template(output_rows, template_file, output_path):
             elif x_val is None: ws.cell(row=r, column=24).fill = red_fill
             elif y_val is None: ws.cell(row=r, column=25).fill = red_fill
             ws.cell(row=r, column=26).value = f'=W{r}*X{r}*Y{r}/6000'
+            ws.cell(row=r, column=26).number_format = '#,##0.00'
             ws.cell(row=r, column=27).value = f'=W{r}*X{r}*Y{r}*M{r}/1000000'
             ws.cell(row=r, column=28).value = f'=V{r}*M{r}'
             ws.cell(row=r, column=29).value = f'=Z{r}*M{r}'
+            ws.cell(row=r, column=29).number_format = '#,##0.00'
             ws.cell(row=r, column=30).value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
             current_row += 1
         if start_row < current_row - 1:
@@ -410,7 +464,8 @@ def _write_output_to_template(output_rows, template_file, output_path):
 
 
 def generate_picking_output_multi(invoice_files, system_file, output_path,
-                                   history_file=None, template_file=None):
+                                   history_file=None, template_file=None,
+                                   quotation_file=None):
     """支持多份发票合并输出一份拣货数据
 
     参数:
@@ -419,6 +474,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         output_path: 输出文件路径
         history_file: 箱规历史数据库路径（可选）
         template_file: 模板文件路径（可选）
+        quotation_file: 报价表文件路径（可选）
     返回:
         (output_path, total_boxes)
     """
@@ -426,11 +482,14 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         history_file = HISTORY_FILE
     if template_file is None:
         template_file = TEMPLATE_FILE
+    if quotation_file is None:
+        quotation_file = QUOTATION_FILE
 
     # ── 解析多份发票 ──
     data_rows, service, warehouse = parse_invoice_merge(invoice_files)
     prefix_to_so = parse_system_export(system_file)
     history_records = parse_history(history_file)
+    quotation_data = parse_quotation(quotation_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -438,6 +497,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     print(f"  📄 发票数据（合并）: {len(invoice_files)} 个文件, {len(data_rows)} 行")
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
+    print(f"  💰 报价单: {len(quotation_data)} 条")
 
     # ── 构建输出行数据 ──
     output_rows = []
@@ -456,12 +516,18 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
+        # 从报价单查找 E/F/G
+        q_key = (service, warehouse)
+        q_info = quotation_data.get(q_key, {})
+
         out = {
             'so_no': so_no,
             'service': service,
             'country': country_from_warehouse(warehouse),
             'warehouse': warehouse,
-            'e_price': '', 'f_price': '', 'supplier_ch': '',
+            'e_price': q_info.get('e_price', ''),
+            'f_price': q_info.get('f_price', ''),
+            'supplier_ch': q_info.get('supplier_ch', ''),
             'ship_name': '', 'customs': '',
             'fba_id': fba_id,
             'cn_name': cn_name,
