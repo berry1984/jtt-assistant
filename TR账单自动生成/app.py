@@ -412,12 +412,12 @@ def picking_export():
     """
     sys.path.insert(0, PICKING_DIR)
 
-    invoice_file = request.files.get('picking_invoice')
+    invoice_files = request.files.getlist('picking_invoice')
     system_file = request.files.get('picking_system')
     history_file = request.files.get('picking_history')
 
-    if not invoice_file or invoice_file.filename == '':
-        flash('请上传发票文件')
+    if not invoice_files or all(f.filename == '' for f in invoice_files):
+        flash('请上传至少一份发票文件')
         return redirect('/picking')
     if not system_file or system_file.filename == '':
         flash('请上传系统导出拣货数据文件')
@@ -425,17 +425,23 @@ def picking_export():
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
     try:
-        from export_picking_data import generate_picking_output, HISTORY_FILE, TEMPLATE_FILE
+        from export_picking_data import generate_picking_output_multi, HISTORY_FILE, TEMPLATE_FILE
 
         # 检查服务器端文件
         if not os.path.exists(TEMPLATE_FILE):
             flash(f'服务器缺少输出模板: {TEMPLATE_FILE}')
             return redirect('/picking')
 
-        # 保存上传文件
-        invoice_path = os.path.join(tmp_dir, 'invoice.xlsx')
+        # 保存上传的发票文件（可能多份）
+        invoice_paths = []
+        for f in invoice_files:
+            if f.filename:
+                path = os.path.join(tmp_dir, f'invoice_{len(invoice_paths)}.xlsx')
+                f.save(path)
+                invoice_paths.append(path)
+
+        # 保存系统导出文件
         system_path = os.path.join(tmp_dir, 'system.xlsx')
-        invoice_file.save(invoice_path)
         system_file.save(system_path)
 
         # 箱规历史数据库：上传了就使用上传的，否则用服务器默认
@@ -450,8 +456,8 @@ def picking_export():
 
         output_path = os.path.join(tmp_dir, 'temp_output.xlsx')
 
-        result, total_boxes = generate_picking_output(invoice_path, system_path, output_path,
-                                                        history_file=history_path)
+        result, total_boxes = generate_picking_output_multi(invoice_paths, system_path, output_path,
+                                                             history_file=history_path)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date

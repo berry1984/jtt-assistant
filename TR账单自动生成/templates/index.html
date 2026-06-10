@@ -294,10 +294,10 @@
 
     <form method="post" action="/picking_export" enctype="multipart/form-data" id="pickingForm">
       <div class="form-group">
-        <label>发票文件 <small>(.xlsx，含货箱编号+重量尺寸+品名)</small></label>
+        <label>发票文件 <small>(.xlsx，可多选，多份发票合并输出一份)</small></label>
         <div class="file-input-wrapper" id="pw1">
-          <input type="file" name="picking_invoice" accept=".xlsx" required
-                 onchange="updateLabel(this, 'pw1')">
+          <input type="file" name="picking_invoice" accept=".xlsx" required multiple
+                 onchange="updateLabelMulti(this, 'pw1')">
           <div class="icon">📄</div>
           <div class="hint">上传发票文件</div>
           <div class="filename"></div>
@@ -368,6 +368,16 @@ function switchTab(name) {
 }
 
 // ── 文件选择 ──
+function updateLabelMulti(input, wrapperId) {
+  const wrapper = document.getElementById(wrapperId);
+  const fn = wrapper.querySelector('.filename');
+  if (input.files.length > 0) {
+    fn.textContent = '✅ 已选 ' + input.files.length + ' 个文件';
+    wrapper.classList.add('has-file');
+  } else {
+    wrapper.classList.remove('has-file');
+  }
+}
 function updateLabel(input, wrapperId) {
   const wrapper = document.getElementById(wrapperId);
   const fn = wrapper.querySelector('.filename');

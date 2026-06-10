@@ -241,6 +241,27 @@ def _dims_match(a, b, tolerance):
     return abs(a - b) < tolerance
 
 
+def parse_invoice_merge(invoice_files):
+    """解析多份发票，合并数据行
+
+    参数:
+        invoice_files: 发票文件路径列表
+    返回:
+        (merged_data_rows, service, warehouse)
+    """
+    all_rows = []
+    service = ''
+    warehouse = ''
+    for f in invoice_files:
+        rows, svc, wh = parse_invoice(f)
+        all_rows.extend(rows)
+        if not service and svc:
+            service = svc
+        if not warehouse and wh:
+            warehouse = wh
+    return all_rows, service, warehouse
+
+
 # ── 输出生成 ──
 
 def generate_picking_output(invoice_file, system_file, output_path,
@@ -313,20 +334,23 @@ def generate_picking_output(invoice_file, system_file, output_path,
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
 
     # ── 写入模板 ──
+    _write_output_to_template(output_rows, template_file, output_path)
+    return output_path, total_boxes
+
+
+def _write_output_to_template(output_rows, template_file, output_path):
+    """将输出行数据写入模板并保存"""
     wb = openpyxl.load_workbook(template_file)
     ws = wb.active
+    red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
-    # 先解除所有合并单元格（Row 2+），再删除空行
     merges_to_remove = [str(m) for m in list(ws.merged_cells.ranges) if m.min_row >= 2]
     for m_str in merges_to_remove:
         ws.unmerge_cells(m_str)
-
-    # 删除旧数据行 (Row 2 起)，保留表头 Row 1
     max_existing = ws.max_row
     if max_existing >= 2:
         ws.delete_rows(2, max_existing - 1)
 
-    # ── 按 SO 号分组 ──
     groups = []
     cur = []
     for row in output_rows:
@@ -342,91 +366,124 @@ def generate_picking_output(invoice_file, system_file, output_path,
     if cur:
         groups.append(cur)
 
-    # ── 写入数据 ──
     current_row = 2
-    red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-
     for group in groups:
         start_row = current_row
-        # 写共享值（A-I列，仅首行）
-        ws.cell(row=start_row, column=1).value = group[0]['so_no']   # A
-        ws.cell(row=start_row, column=2).value = group[0]['service']  # B
-        ws.cell(row=start_row, column=3).value = group[0]['country']  # C
-        ws.cell(row=start_row, column=4).value = group[0]['warehouse']  # D
-        # E-I 手动输入，留空
-
+        ws.cell(row=start_row, column=1).value = group[0]['so_no']
+        ws.cell(row=start_row, column=2).value = group[0]['service']
+        ws.cell(row=start_row, column=3).value = group[0]['country']
+        ws.cell(row=start_row, column=4).value = group[0]['warehouse']
         for row_data in group:
             r = current_row
-            # J, K
-            ws.cell(row=r, column=10).value = row_data['fba_id']   # J
-            ws.cell(row=r, column=11).value = row_data['cn_name']  # K
-
-            # L 手动输入
-
-            # M
-            ws.cell(row=r, column=13).value = row_data['box_count']  # M
-
-            # N-Q
-            ws.cell(row=r, column=14).value = row_data['weight']  # N
-            ws.cell(row=r, column=15).value = row_data['length']  # O
-            ws.cell(row=r, column=16).value = row_data['width']   # P
-            ws.cell(row=r, column=17).value = row_data['height']  # Q
-
-            # R = O*P*Q/6000  (formula)
+            ws.cell(row=r, column=10).value = row_data['fba_id']
+            ws.cell(row=r, column=11).value = row_data['cn_name']
+            ws.cell(row=r, column=13).value = row_data['box_count']
+            ws.cell(row=r, column=14).value = row_data['weight']
+            ws.cell(row=r, column=15).value = row_data['length']
+            ws.cell(row=r, column=16).value = row_data['width']
+            ws.cell(row=r, column=17).value = row_data['height']
             ws.cell(row=r, column=18).value = f'=O{r}*P{r}*Q{r}/6000'
-
-            # S, T (formulas)
             ws.cell(row=r, column=19).value = f'=R{r}-Z{r}'
             ws.cell(row=r, column=20).value = f'=O{r}+P{r}+Q{r}-Y{r}-X{r}-W{r}'
-
-            # U 手动输入
-
-            # V-Y (历史匹配值)
-            v_val = row_data['ref_w']
-            w_val = row_data['ref_l']
-            x_val = row_data['ref_wid']
-            y_val = row_data['ref_h']
-
-            ws.cell(row=r, column=22).value = v_val  # V
-            ws.cell(row=r, column=23).value = w_val  # W
-            ws.cell(row=r, column=24).value = x_val  # X
-            ws.cell(row=r, column=25).value = y_val  # Y
-
-            # 无匹配时标红
+            v_val, w_val, x_val, y_val = row_data['ref_w'], row_data['ref_l'], row_data['ref_wid'], row_data['ref_h']
+            ws.cell(row=r, column=22).value = v_val
+            ws.cell(row=r, column=23).value = w_val
+            ws.cell(row=r, column=24).value = x_val
+            ws.cell(row=r, column=25).value = y_val
             if all(v is None for v in [v_val, w_val, x_val, y_val]):
-                for col in [22, 23, 24, 25]:
-                    ws.cell(row=r, column=col).fill = red_fill
-            elif v_val is None:
-                ws.cell(row=r, column=22).fill = red_fill
-            elif w_val is None:
-                ws.cell(row=r, column=23).fill = red_fill
-            elif x_val is None:
-                ws.cell(row=r, column=24).fill = red_fill
-            elif y_val is None:
-                ws.cell(row=r, column=25).fill = red_fill
-
-            # Z ~ AD (formulas)
+                for col in [22, 23, 24, 25]: ws.cell(row=r, column=col).fill = red_fill
+            elif v_val is None: ws.cell(row=r, column=22).fill = red_fill
+            elif w_val is None: ws.cell(row=r, column=23).fill = red_fill
+            elif x_val is None: ws.cell(row=r, column=24).fill = red_fill
+            elif y_val is None: ws.cell(row=r, column=25).fill = red_fill
             ws.cell(row=r, column=26).value = f'=W{r}*X{r}*Y{r}/6000'
             ws.cell(row=r, column=27).value = f'=W{r}*X{r}*Y{r}*M{r}/1000000'
             ws.cell(row=r, column=28).value = f'=V{r}*M{r}'
             ws.cell(row=r, column=29).value = f'=Z{r}*M{r}'
             ws.cell(row=r, column=30).value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
-
-            # AE-AJ 手动输入，留空
-
             current_row += 1
-
-        end_row = current_row - 1
-
-        # 同一 SO 号组：合并 A, B 列
-        if start_row < end_row:
-            ws.merge_cells(start_row=start_row, start_column=1, end_row=end_row, end_column=1)
-            ws.merge_cells(start_row=start_row, start_column=2, end_row=end_row, end_column=2)
-            # 也可合并 C, D 等，但为安全只合并 A, B
-
-    # ── 保存 ──
+        if start_row < current_row - 1:
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
+            ws.merge_cells(start_row=start_row, start_column=2, end_row=current_row - 1, end_column=2)
     wb.save(output_path)
     print(f"  ✅ 已保存: {output_path}")
+
+
+def generate_picking_output_multi(invoice_files, system_file, output_path,
+                                   history_file=None, template_file=None):
+    """支持多份发票合并输出一份拣货数据
+
+    参数:
+        invoice_files: 发票文件路径列表
+        system_file: 系统导出拣货数据文件路径
+        output_path: 输出文件路径
+        history_file: 箱规历史数据库路径（可选）
+        template_file: 模板文件路径（可选）
+    返回:
+        (output_path, total_boxes)
+    """
+    if history_file is None:
+        history_file = HISTORY_FILE
+    if template_file is None:
+        template_file = TEMPLATE_FILE
+
+    # ── 解析多份发票 ──
+    data_rows, service, warehouse = parse_invoice_merge(invoice_files)
+    prefix_to_so = parse_system_export(system_file)
+    history_records = parse_history(history_file)
+
+    if not data_rows:
+        raise ValueError("发票中未找到有效数据行")
+
+    print(f"  📄 发票数据（合并）: {len(invoice_files)} 个文件, {len(data_rows)} 行")
+    print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
+    print(f"  📚 箱规历史: {len(history_records)} 条记录")
+
+    # ── 构建输出行数据 ──
+    output_rows = []
+    missing_history = []
+    for row in data_rows:
+        box_no = row['box_no']
+        fba_id = extract_fba_id(box_no)
+        box_count = calc_box_count(box_no)
+        so_no = prefix_to_so.get(fba_id, '')
+
+        cn_name = str(row['cn_name'] or '').strip()
+        weight = _to_float(row['weight'])
+        length = _to_float(row['length'])
+        width = _to_float(row['width'])
+        height = _to_float(row['height'])
+
+        hm = find_history_match(history_records, cn_name, weight, length, width, height)
+
+        out = {
+            'so_no': so_no,
+            'service': service,
+            'country': country_from_warehouse(warehouse),
+            'warehouse': warehouse,
+            'e_price': '', 'f_price': '', 'supplier_ch': '',
+            'ship_name': '', 'customs': '',
+            'fba_id': fba_id,
+            'cn_name': cn_name,
+            'pickup_fee': '',
+            'box_count': box_count,
+            'weight': weight, 'length': length, 'width': width, 'height': height,
+            'history_note': '',
+            'ref_w': hm['rw'] if hm else None,
+            'ref_l': hm['rl'] if hm else None,
+            'ref_wid': hm['rwid'] if hm else None,
+            'ref_h': hm['rh'] if hm else None,
+        }
+        output_rows.append(out)
+        if hm is None:
+            missing_history.append(out)
+
+    total_boxes = sum(r['box_count'] for r in output_rows)
+    print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
+    print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
+
+    # ── 写入模板（复用内部的写入逻辑）──
+    _write_output_to_template(output_rows, template_file, output_path)
     return output_path, total_boxes
 
 
