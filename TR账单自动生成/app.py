@@ -414,6 +414,7 @@ def picking_export():
 
     invoice_file = request.files.get('picking_invoice')
     system_file = request.files.get('picking_system')
+    history_file = request.files.get('picking_history')
 
     if not invoice_file or invoice_file.filename == '':
         flash('请上传发票文件')
@@ -427,9 +428,6 @@ def picking_export():
         from export_picking_data import generate_picking_output, HISTORY_FILE, TEMPLATE_FILE
 
         # 检查服务器端文件
-        if not os.path.exists(HISTORY_FILE):
-            flash(f'服务器缺少箱规历史数据库: {HISTORY_FILE}')
-            return redirect('/picking')
         if not os.path.exists(TEMPLATE_FILE):
             flash(f'服务器缺少输出模板: {TEMPLATE_FILE}')
             return redirect('/picking')
@@ -440,9 +438,20 @@ def picking_export():
         invoice_file.save(invoice_path)
         system_file.save(system_path)
 
+        # 箱规历史数据库：上传了就使用上传的，否则用服务器默认
+        if history_file and history_file.filename:
+            history_path = os.path.join(tmp_dir, 'history.xlsx')
+            history_file.save(history_path)
+        else:
+            history_path = HISTORY_FILE
+            if not os.path.exists(history_path):
+                flash(f'服务器缺少箱规历史数据库: {history_path}')
+                return redirect('/picking')
+
         output_path = os.path.join(tmp_dir, 'temp_output.xlsx')
 
-        result, total_boxes = generate_picking_output(invoice_path, system_path, output_path)
+        result, total_boxes = generate_picking_output(invoice_path, system_path, output_path,
+                                                        history_file=history_path)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date

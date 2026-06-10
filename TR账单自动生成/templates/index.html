@@ -313,6 +313,16 @@
           <div class="filename"></div>
         </div>
       </div>
+      <div class="form-group">
+        <label>箱规历史数据库 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
+        <div class="file-input-wrapper" id="pw3">
+          <input type="file" name="picking_history" accept=".xlsx"
+                 onchange="updateLabel(this, 'pw3')">
+          <div class="icon">📚</div>
+          <div class="hint">如需更新箱规数据库，上传新文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
       <button type="submit" class="btn btn-primary" id="pickingBtn">生成拣货数据参考值</button>
     </form>
   </div>
