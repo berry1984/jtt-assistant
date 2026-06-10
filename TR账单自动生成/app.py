@@ -455,14 +455,14 @@ def picking_export():
                 flash(f'服务器缺少箱规历史数据库: {history_path}')
                 return redirect('/picking')
 
-        # 报价表：上传了就使用上传的，否则用服务器默认
+        # 报价单：上传了就使用上传的，否则用服务器默认
         if quotation_file and quotation_file.filename:
             quotation_path = os.path.join(tmp_dir, 'quotation.xlsx')
             quotation_file.save(quotation_path)
         else:
             quotation_path = QUOTATION_FILE
             if not os.path.exists(quotation_path):
-                flash(f'服务器缺少报价表: {quotation_path}')
+                flash(f'服务器缺少报价单: {quotation_path}')
                 return redirect('/picking')
 
         output_path = os.path.join(tmp_dir, 'temp_output.xlsx')
