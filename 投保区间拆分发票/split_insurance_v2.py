@@ -386,44 +386,77 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
             with open(comm_out, 'wb') as f:
                 f.write(comments_blob)
 
-        # ── 5. 复制 cellimages.xml（如果有） ──
+        # ── 5. 过滤 cellimages.xml（如果有，按 cellRef 行号） ──
         ci_blob = image_data['files'].get('xl/cellimages.xml')
+        ci_used_rIds = set()
         if ci_blob:
+            ci_tree = ET.fromstring(ci_blob)
+            # cellimages.xml 根元素是 <cellImages>
+            ci_root = ci_tree
+            cells_to_keep = []
+            for ci_elem in list(ci_root):
+                cell_ref = ci_elem.get('cellRef', '')
+                # 从 cellRef 提取行号，如 "P28" → 28
+                m = re.search(r'(\d+)$', cell_ref)
+                if m:
+                    sheet_row = int(m.group(1))
+                    if kept_src_rows is not None and sheet_row not in kept_src_rows:
+                        ci_root.remove(ci_elem)
+                        continue
+                cells_to_keep.append(ci_elem)
+                r_id = ci_elem.get('rId', '')
+                if r_id:
+                    ci_used_rIds.add(r_id)
+            filtered_ci = ET.tostring(ci_tree, xml_declaration=True, encoding='UTF-8')
             ci_out = os.path.join(tmp_dir, 'xl', 'cellimages.xml')
             os.makedirs(os.path.dirname(ci_out), exist_ok=True)
             with open(ci_out, 'wb') as f:
-                f.write(ci_blob)
+                f.write(filtered_ci)
+
+        # 过滤 cellimages.xml.rels（只保留 ci_used_rIds）
         ci_rels_blob = image_data['files'].get('xl/_rels/cellimages.xml.rels')
         if ci_rels_blob:
+            if kept_src_rows is not None and ci_used_rIds:
+                ci_rels_root = ET.fromstring(ci_rels_blob)
+                for child in list(ci_rels_root):
+                    rid = child.get('Id', '')
+                    if rid not in ci_used_rIds:
+                        ci_rels_root.remove(child)
+                filtered_ci_rels = ET.tostring(ci_rels_root, xml_declaration=True, encoding='UTF-8')
+            else:
+                filtered_ci_rels = ci_rels_blob
             ci_rels_out = os.path.join(tmp_dir, 'xl', '_rels', 'cellimages.xml.rels')
             os.makedirs(os.path.dirname(ci_rels_out), exist_ok=True)
             with open(ci_rels_out, 'wb') as f:
-                f.write(ci_rels_blob)
+                f.write(filtered_ci_rels)
 
-        # ── 6. 复制 media 图片文件（只复制被引用的） ──
+        # ── 6. 复制 media 图片文件（只复制被引用的，合并 drawing 和 cellimages 的 rIds） ──
+        all_used_rIds = used_img_rIds | ci_used_rIds
         media_files = image_data.get('files', {})
-        # 如果有过滤，只复制 used_img_rIds 相关的 media 文件
-        if kept_src_rows is not None and used_img_rIds:
+        if kept_src_rows is not None and all_used_rIds:
             # 从 drawing1.xml.rels 找出 used rIds 对应的 media 文件路径
-            # targets 是相对于源文件 xl/drawings/drawing1.xml 的位置
             rels_data = image_data['files'].get('xl/drawings/_rels/drawing1.xml.rels', b'')
-            if rels_data:
-                rels_root = ET.fromstring(rels_data)
-                used_media_paths = set()
-                draw_base = os.path.dirname('xl/drawings/drawing1.xml')  # → 'xl/drawings'
+            # 从 cellimages.xml.rels 也找 media 路径
+            ci_rels_data = image_data['files'].get('xl/_rels/cellimages.xml.rels', b'')
+            used_media_paths = set()
+            draw_base = os.path.dirname('xl/drawings/drawing1.xml')  # → 'xl/drawings'
+            for rels_bytes in [rels_data, ci_rels_data]:
+                if not rels_bytes:
+                    continue
+                rels_root = ET.fromstring(rels_bytes)
                 for child in rels_root:
-                    if child.get('Id', '') in used_img_rIds:
+                    if child.get('Id', '') in all_used_rIds:
                         target = child.get('Target', '')
                         if target:
                             used_media_paths.add(os.path.normpath(os.path.join(
                                 draw_base, target
                             )))
-                for media_path in used_media_paths:
-                    if media_path in media_files:
-                        dst = os.path.join(tmp_dir, media_path)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        with open(dst, 'wb') as f:
-                            f.write(media_files[media_path])
+            for media_path in used_media_paths:
+                if media_path in media_files:
+                    dst = os.path.join(tmp_dir, media_path)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, 'wb') as f:
+                        f.write(media_files[media_path])
         else:
             # 全部复制
             for rel_path, blob in media_files.items():
