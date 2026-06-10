@@ -289,15 +289,16 @@
       <strong>📎 规则：</strong>
       ① 发票货箱编号 → FBA ID → 匹配系统导出运单号(SO号)<br>
       ② 品名+重量尺寸 → 匹配箱规历史数据库 → 取标准箱规参考值<br>
-      ③ 自动填充公式列(材积重/周长差异/总实重/计费重等)
+      ③ 从报价表自动填充应收单价/应付单价/供应商渠道<br>
+      ④ 自动填充公式列(材积重/周长差异/总实重/计费重等)
     </div>
 
     <form method="post" action="/picking_export" enctype="multipart/form-data" id="pickingForm">
       <div class="form-group">
-        <label>发票文件 <small>(.xlsx，含货箱编号+重量尺寸+品名)</small></label>
+        <label>发票文件 <small>(.xlsx，可多选，多份发票合并输出一份)</small></label>
         <div class="file-input-wrapper" id="pw1">
-          <input type="file" name="picking_invoice" accept=".xlsx" required
-                 onchange="updateLabel(this, 'pw1')">
+          <input type="file" name="picking_invoice" accept=".xlsx" required multiple
+                 onchange="updateLabelMulti(this, 'pw1')">
           <div class="icon">📄</div>
           <div class="hint">上传发票文件</div>
           <div class="filename"></div>
@@ -310,6 +311,26 @@
                  onchange="updateLabel(this, 'pw2')">
           <div class="icon">📊</div>
           <div class="hint">上传系统导出拣货数据</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>报价表 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
+        <div class="file-input-wrapper" id="pw4">
+          <input type="file" name="picking_quotation" accept=".xlsx"
+                 onchange="updateLabel(this, 'pw4')">
+          <div class="icon">💰</div>
+          <div class="hint">如需更新报价表，上传新文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>箱规历史数据库 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
+        <div class="file-input-wrapper" id="pw3">
+          <input type="file" name="picking_history" accept=".xlsx"
+                 onchange="updateLabel(this, 'pw3')">
+          <div class="icon">📚</div>
+          <div class="hint">如需更新箱规数据库，上传新文件</div>
           <div class="filename"></div>
         </div>
       </div>
@@ -358,6 +379,16 @@ function switchTab(name) {
 }
 
 // ── 文件选择 ──
+function updateLabelMulti(input, wrapperId) {
+  const wrapper = document.getElementById(wrapperId);
+  const fn = wrapper.querySelector('.filename');
+  if (input.files.length > 0) {
+    fn.textContent = '✅ 已选 ' + input.files.length + ' 个文件';
+    wrapper.classList.add('has-file');
+  } else {
+    wrapper.classList.remove('has-file');
+  }
+}
 function updateLabel(input, wrapperId) {
   const wrapper = document.getElementById(wrapperId);
   const fn = wrapper.querySelector('.filename');
