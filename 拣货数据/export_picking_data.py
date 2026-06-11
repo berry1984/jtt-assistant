@@ -185,10 +185,12 @@ def _to_float(v):
 
 
 def parse_quotation(filepath):
-    """解析报价表，返回 {(service, warehouse): {e_price, f_price, supplier_ch}} 映射
+    """解析报价表，返回 {warehouse: {e_price, f_price, supplier_ch}} 映射
 
     报价表格式：
         A列=物流渠道, B列=后台仓库, C列=应收单价, G列=供应商渠道, H列=应付单价
+
+    匹配逻辑：以 后台仓库(B列) 为键，同一仓库有多条记录时取最后一条。
     """
     if not filepath or not os.path.exists(filepath):
         return {}
@@ -205,14 +207,13 @@ def parse_quotation(filepath):
         return {}
     quotation = {}
     for r in range(2, ws.max_row + 1):
-        service = str(ws.cell(row=r, column=1).value or '').strip()
         warehouse = str(ws.cell(row=r, column=2).value or '').strip()
-        if not service or not warehouse:
+        if not warehouse:
             continue
         e_price = _to_float(ws.cell(row=r, column=3).value)
         f_price = _to_float(ws.cell(row=r, column=8).value)   # H列=应付单价
         supplier_ch = str(ws.cell(row=r, column=7).value or '').strip()  # G列=供应商渠道
-        quotation[(service, warehouse)] = {
+        quotation[warehouse] = {
             'e_price': e_price if e_price is not None else '',
             'f_price': f_price if f_price is not None else '',
             'supplier_ch': supplier_ch,
@@ -344,9 +345,8 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
-        # 从报价单查找 E/F/G
-        q_key = (service, warehouse)
-        q_info = quotation_data.get(q_key, {})
+        # 从报价单查找 E/F/G（按仓库代码匹配）
+        q_info = quotation_data.get(warehouse, {})
 
         out = {
             'so_no': so_no,
@@ -605,9 +605,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
-        # 从报价单查找 E/F/G
-        q_key = (service, warehouse)
-        q_info = quotation_data.get(q_key, {})
+        # 从报价单查找 E/F/G（按仓库代码匹配）
+        q_info = quotation_data.get(warehouse, {})
 
         out = {
             'so_no': so_no,
