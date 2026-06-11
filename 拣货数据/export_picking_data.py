@@ -20,7 +20,7 @@
   python3 export_picking_data.py <发票文件> <系统导出文件> [输出文件]
 """
 import openpyxl
-from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, Color
 from openpyxl.utils import get_column_letter
 import os
 import re
@@ -385,6 +385,48 @@ def generate_picking_output(invoice_file, system_file, output_path,
     return output_path, total_boxes
 
 
+# ── 样式常量（参考标准版格式） ──
+THIN_BORDER = Border(
+    left=Side(style='thin'), right=Side(style='thin'),
+    top=Side(style='thin'), bottom=Side(style='thin'),
+)
+DATA_FONT = Font(name='微软雅黑', size=10, color=Color(indexed=8))
+ALIGN_CENTER = Alignment(horizontal='center', vertical='center')
+ALIGN_LEFT = Alignment(horizontal='left', vertical='center')
+ALIGN_WRAP = Alignment(vertical='center', wrap_text=True)
+
+# 需要居中对齐的数值/公式列
+CENTER_COLS = {3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
+# 需要左对齐的文本列
+LEFT_COLS = {1, 2, 8, 9, 10, 11}
+
+# 列宽（匹配标准版）
+COL_WIDTHS = {
+    'A': 18.54, 'B': 21.46, 'C': 10.56, 'D': 9.54,
+    'E': 8.43, 'F': 8.43, 'G': 8.16, 'H': 27.44,
+    'I': 21.78, 'J': 9.54, 'K': 17.61, 'L': 19.0,
+    'M': 12.16, 'N': 7.07, 'O': 8.39, 'P': 8.39,
+    'Q': 8.39, 'R': 7.61, 'S': 9.0, 'T': 6.33,
+    'U': 6.11, 'V': 10.89, 'W': 12.46, 'X': 8.43,
+    'Y': 7.61, 'Z': 5.93, 'AA': 8.07, 'AB': 9.54,
+    'AC': 8.07, 'AD': 9.0, 'AE': 9.54,
+}
+
+
+def _style_data_cell(cell):
+    """对数据单元格应用标准样式"""
+    cell.font = DATA_FONT
+    cell.border = THIN_BORDER
+    col = cell.column
+    if col in CENTER_COLS:
+        cell.alignment = ALIGN_CENTER
+    elif col in LEFT_COLS:
+        if col == 8:  # 供应商渠道 → 允许换行
+            cell.alignment = ALIGN_WRAP
+        else:
+            cell.alignment = ALIGN_LEFT
+
+
 def _write_output_to_template(output_rows, template_file, output_path):
     """将输出行数据写入模板并保存"""
     wb = openpyxl.load_workbook(template_file)
@@ -416,49 +458,95 @@ def _write_output_to_template(output_rows, template_file, output_path):
     current_row = 2
     for group in groups:
         start_row = current_row
-        ws.cell(row=start_row, column=1).value = group[0]['so_no']
-        ws.cell(row=start_row, column=2).value = group[0]['service']
-        ws.cell(row=start_row, column=3).value = group[0]['country']
-        ws.cell(row=start_row, column=4).value = group[0]['warehouse']
+        c1 = ws.cell(row=start_row, column=1)
+        c1.value = group[0]['so_no']
+        _style_data_cell(c1)
+        c2 = ws.cell(row=start_row, column=2)
+        c2.value = group[0]['service']
+        _style_data_cell(c2)
+        c3 = ws.cell(row=start_row, column=3)
+        c3.value = group[0]['country']
+        _style_data_cell(c3)
+        c4 = ws.cell(row=start_row, column=4)
+        c4.value = group[0]['warehouse']
+        _style_data_cell(c4)
         for row_data in group:
             r = current_row
             # E列=应收单价, F列=应付单价, G列=供应商渠道（从报价单读取）
-            ws.cell(row=r, column=5).value = row_data.get('e_price', '')
-            ws.cell(row=r, column=6).value = row_data.get('f_price', '')
-            ws.cell(row=r, column=7).value = row_data.get('supplier_ch', '')
-            ws.cell(row=r, column=10).value = row_data['fba_id']
-            ws.cell(row=r, column=11).value = row_data['cn_name']
-            ws.cell(row=r, column=13).value = row_data['box_count']
-            ws.cell(row=r, column=14).value = row_data['weight']
-            ws.cell(row=r, column=15).value = row_data['length']
-            ws.cell(row=r, column=16).value = row_data['width']
-            ws.cell(row=r, column=17).value = row_data['height']
-            ws.cell(row=r, column=18).value = f'=O{r}*P{r}*Q{r}/6000'
-            ws.cell(row=r, column=18).number_format = '#,##0.00'
-            ws.cell(row=r, column=19).value = f'=R{r}-Z{r}'
-            ws.cell(row=r, column=20).value = f'=O{r}+P{r}+Q{r}-Y{r}-X{r}-W{r}'
+            for col, key in [(5, 'e_price'), (6, 'f_price'), (7, 'supplier_ch')]:
+                cell = ws.cell(row=r, column=col)
+                cell.value = row_data.get(key, '')
+                _style_data_cell(cell)
+            for col, key in [(10, 'fba_id'), (11, 'cn_name')]:
+                cell = ws.cell(row=r, column=col)
+                cell.value = row_data[key]
+                _style_data_cell(cell)
+            for col, key in [(13, 'box_count'), (14, 'weight'), (15, 'length'),
+                              (16, 'width'), (17, 'height')]:
+                cell = ws.cell(row=r, column=col)
+                cell.value = row_data[key]
+                _style_data_cell(cell)
+            # R列=材积重（公式）
+            cell_r = ws.cell(row=r, column=18)
+            cell_r.value = f'=O{r}*P{r}*Q{r}/6000'
+            cell_r.number_format = '#,##0.00'
+            _style_data_cell(cell_r)
+            # S列=单箱材积重差异
+            cell_s = ws.cell(row=r, column=19)
+            cell_s.value = f'=R{r}-Z{r}'
+            _style_data_cell(cell_s)
+            # T列=周长差异
+            cell_t = ws.cell(row=r, column=20)
+            cell_t.value = f'=O{r}+P{r}+Q{r}-Y{r}-X{r}-W{r}'
+            _style_data_cell(cell_t)
+            # V/W/X/Y = 参考长/宽/高/实重
             v_val, w_val, x_val, y_val = row_data['ref_w'], row_data['ref_l'], row_data['ref_wid'], row_data['ref_h']
-            ws.cell(row=r, column=22).value = v_val
-            ws.cell(row=r, column=23).value = w_val
-            ws.cell(row=r, column=24).value = x_val
-            ws.cell(row=r, column=25).value = y_val
+            for col, val in [(22, v_val), (23, w_val), (24, x_val), (25, y_val)]:
+                cell = ws.cell(row=r, column=col)
+                cell.value = val
+                _style_data_cell(cell)
+            # 无历史匹配 → 标红
             if all(v is None for v in [v_val, w_val, x_val, y_val]):
-                for col in [22, 23, 24, 25]: ws.cell(row=r, column=col).fill = red_fill
+                for col in [22, 23, 24, 25]:
+                    ws.cell(row=r, column=col).fill = red_fill
             elif v_val is None: ws.cell(row=r, column=22).fill = red_fill
             elif w_val is None: ws.cell(row=r, column=23).fill = red_fill
             elif x_val is None: ws.cell(row=r, column=24).fill = red_fill
             elif y_val is None: ws.cell(row=r, column=25).fill = red_fill
-            ws.cell(row=r, column=26).value = f'=W{r}*X{r}*Y{r}/6000'
-            ws.cell(row=r, column=26).number_format = '#,##0.00'
-            ws.cell(row=r, column=27).value = f'=W{r}*X{r}*Y{r}*M{r}/1000000'
-            ws.cell(row=r, column=28).value = f'=V{r}*M{r}'
-            ws.cell(row=r, column=29).value = f'=Z{r}*M{r}'
-            ws.cell(row=r, column=29).number_format = '#,##0.00'
-            ws.cell(row=r, column=30).value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
+            # Y列=材积重（公式）
+            cell_y = ws.cell(row=r, column=26)
+            cell_y.value = f'=W{r}*X{r}*Y{r}/6000'
+            cell_y.number_format = '#,##0.00'
+            _style_data_cell(cell_y)
+            # Z列=体积（公式）
+            cell_z = ws.cell(row=r, column=27)
+            cell_z.value = f'=W{r}*X{r}*Y{r}*M{r}/1000000'
+            _style_data_cell(cell_z)
+            # AA列=总实重（公式）
+            cell_aa = ws.cell(row=r, column=28)
+            cell_aa.value = f'=V{r}*M{r}'
+            _style_data_cell(cell_aa)
+            # AB列=总材积重（公式）
+            cell_ab = ws.cell(row=r, column=29)
+            cell_ab.value = f'=Z{r}*M{r}'
+            cell_ab.number_format = '#,##0.00'
+            _style_data_cell(cell_ab)
+            # AC列=计费重（公式）
+            cell_ac = ws.cell(row=r, column=30)
+            cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
+            _style_data_cell(cell_ac)
+            # 行高
+            ws.row_dimensions[r].height = 30
             current_row += 1
         if start_row < current_row - 1:
             ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
             ws.merge_cells(start_row=start_row, start_column=2, end_row=current_row - 1, end_column=2)
+    # ── 设置列宽 ──
+    for col_letter, width in COL_WIDTHS.items():
+        ws.column_dimensions[col_letter].width = width
+    # ── 设置表头行高（如果模板未设置） ──
+    if ws.row_dimensions[1].height is None or ws.row_dimensions[1].height < 28:
+        ws.row_dimensions[1].height = 28
     wb.save(output_path)
     print(f"  ✅ 已保存: {output_path}")
 
