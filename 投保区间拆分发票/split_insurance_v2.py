@@ -306,6 +306,7 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
                 # 提取行号
                 from_elem = anchor.find(f'{{{NS_XDR}}}from')
                 row_to_keep = True  # 默认保留
+                drawing_row = None
                 if from_elem is not None:
                     row_el = from_elem.find(f'{{{NS_XDR}}}row')
                     if row_el is not None and row_el.text is not None:
@@ -313,6 +314,41 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
                         sheet_row = drawing_row + 1      # 转为1-indexed
                         if sheet_row not in kept_src_rows:
                             row_to_keep = False
+
+                if row_to_keep and drawing_row is not None:
+                    # ── 重新映射行号：计算该行在输出文件中的新位置 ──
+                    sorted_kept = sorted(kept_src_rows)
+                    src_sheet_row = drawing_row + 1
+                    if src_sheet_row in sorted_kept:
+                        new_index = sorted_kept.index(src_sheet_row)
+                        new_sheet_row = DATA_START_ROW + new_index
+                        new_drawing_row = new_sheet_row - 1
+                        delta = new_drawing_row - drawing_row
+
+                        # 更新 from->row
+                        row_el.text = str(new_drawing_row)
+
+                        # 同时更新 to->row（保持图片高度不变）
+                        to_elem = anchor.find(f'{{{NS_XDR}}}to')
+                        if to_elem is not None:
+                            to_row_el = to_elem.find(f'{{{NS_XDR}}}row')
+                            if to_row_el is not None and to_row_el.text is not None:
+                                old_to_row = int(to_row_el.text)
+                                to_row_el.text = str(old_to_row + delta)
+
+                        # 也更新 oneCellAnchor 的 col/row 偏移（如果有）
+                        for child in anchor:
+                            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            if tag in ('from', 'to'):
+                                r_el = child.find(f'{{{NS_XDR}}}row')
+                                if r_el is not None and r_el.text is not None:
+                                    # 减少重复：from 已经更新过了
+                                    if child is not from_elem and child is not to_elem:
+                                        try:
+                                            old_row = int(r_el.text)
+                                            r_el.text = str(old_row + delta)
+                                        except ValueError:
+                                            pass
 
                 if row_to_keep:
                     anchors_to_keep.append(anchor)
@@ -362,19 +398,28 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
             with open(draw_rels_out, 'wb') as f:
                 f.write(draw_rels_blob)
 
-        # ── 4. 过滤 comments1.xml（只保留 kept_src_rows） ──
+        # ── 4. 过滤 comments1.xml（只保留 kept_src_rows，并重映射行号） ──
         comments_blob = image_data['files'].get('xl/comments1.xml')
         if comments_blob and kept_src_rows is not None:
             comm_tree = ET.fromstring(comments_blob)
-            # comments1.xml: <comments><authors>...</authors><commentList><comment ref="P28"...>
             comm_list = comm_tree.find(f'{{{NS_S}}}commentList')
             if comm_list is not None:
+                sorted_kept = sorted(kept_src_rows)
                 for child in list(comm_list):
                     ref = child.get('ref', '')
-                    # 从 ref 中提取行号，如 "P28" → 28
-                    import re as _re
-                    m = _re.search(r'(\d+)$', ref)
-                    if m and int(m.group(1)) not in kept_src_rows:
+                    m = re.search(r'(\d+)$', ref)
+                    if m:
+                        src_row = int(m.group(1))
+                        if src_row not in kept_src_rows:
+                            comm_list.remove(child)
+                        else:
+                            # 重映射到输出文件行号
+                            new_index = sorted_kept.index(src_row)
+                            new_row = DATA_START_ROW + new_index
+                            col_letter = ref.rstrip('0123456789')
+                            child.set('ref', f'{col_letter}{new_row}')
+                    else:
+                        # 无行号 → 删除
                         comm_list.remove(child)
             filtered_comments = ET.tostring(comm_tree, xml_declaration=True, encoding='UTF-8')
             comm_out = os.path.join(tmp_dir, 'xl', 'comments1.xml')
@@ -386,44 +431,83 @@ def _embed_image_data(output_path, image_data, kept_src_rows=None):
             with open(comm_out, 'wb') as f:
                 f.write(comments_blob)
 
-        # ── 5. 复制 cellimages.xml（如果有） ──
+        # ── 5. 过滤 cellimages.xml（如果有，按 cellRef 行号过滤+重映射） ──
         ci_blob = image_data['files'].get('xl/cellimages.xml')
+        ci_used_rIds = set()
         if ci_blob:
+            ci_tree = ET.fromstring(ci_blob)
+            ci_root = ci_tree
+            sorted_kept = sorted(kept_src_rows) if kept_src_rows else []
+            for ci_elem in list(ci_root):
+                cell_ref = ci_elem.get('cellRef', '')
+                m = re.search(r'(\d+)$', cell_ref)
+                if m:
+                    src_row = int(m.group(1))
+                    if kept_src_rows is not None and src_row not in kept_src_rows:
+                        ci_root.remove(ci_elem)
+                        continue
+                    # 重映射到输出文件行号
+                    if kept_src_rows is not None:
+                        new_index = sorted_kept.index(src_row)
+                        new_row = DATA_START_ROW + new_index
+                        col_letter = cell_ref.rstrip('0123456789')
+                        ci_elem.set('cellRef', f'{col_letter}{new_row}')
+                elif kept_src_rows is not None:
+                    ci_root.remove(ci_elem)
+                    continue
+                r_id = ci_elem.get('rId', '')
+                if r_id:
+                    ci_used_rIds.add(r_id)
+            filtered_ci = ET.tostring(ci_tree, xml_declaration=True, encoding='UTF-8')
             ci_out = os.path.join(tmp_dir, 'xl', 'cellimages.xml')
             os.makedirs(os.path.dirname(ci_out), exist_ok=True)
             with open(ci_out, 'wb') as f:
-                f.write(ci_blob)
+                f.write(filtered_ci)
+
+        # 过滤 cellimages.xml.rels（只保留 ci_used_rIds）
         ci_rels_blob = image_data['files'].get('xl/_rels/cellimages.xml.rels')
         if ci_rels_blob:
+            if kept_src_rows is not None and ci_used_rIds:
+                ci_rels_root = ET.fromstring(ci_rels_blob)
+                for child in list(ci_rels_root):
+                    rid = child.get('Id', '')
+                    if rid not in ci_used_rIds:
+                        ci_rels_root.remove(child)
+                filtered_ci_rels = ET.tostring(ci_rels_root, xml_declaration=True, encoding='UTF-8')
+            else:
+                filtered_ci_rels = ci_rels_blob
             ci_rels_out = os.path.join(tmp_dir, 'xl', '_rels', 'cellimages.xml.rels')
             os.makedirs(os.path.dirname(ci_rels_out), exist_ok=True)
             with open(ci_rels_out, 'wb') as f:
-                f.write(ci_rels_blob)
+                f.write(filtered_ci_rels)
 
-        # ── 6. 复制 media 图片文件（只复制被引用的） ──
+        # ── 6. 复制 media 图片文件（只复制被引用的，合并 drawing 和 cellimages 的 rIds） ──
+        all_used_rIds = used_img_rIds | ci_used_rIds
         media_files = image_data.get('files', {})
-        # 如果有过滤，只复制 used_img_rIds 相关的 media 文件
-        if kept_src_rows is not None and used_img_rIds:
+        if kept_src_rows is not None and all_used_rIds:
             # 从 drawing1.xml.rels 找出 used rIds 对应的 media 文件路径
-            # targets 是相对于源文件 xl/drawings/drawing1.xml 的位置
             rels_data = image_data['files'].get('xl/drawings/_rels/drawing1.xml.rels', b'')
-            if rels_data:
-                rels_root = ET.fromstring(rels_data)
-                used_media_paths = set()
-                draw_base = os.path.dirname('xl/drawings/drawing1.xml')  # → 'xl/drawings'
+            # 从 cellimages.xml.rels 也找 media 路径
+            ci_rels_data = image_data['files'].get('xl/_rels/cellimages.xml.rels', b'')
+            used_media_paths = set()
+            draw_base = os.path.dirname('xl/drawings/drawing1.xml')  # → 'xl/drawings'
+            for rels_bytes in [rels_data, ci_rels_data]:
+                if not rels_bytes:
+                    continue
+                rels_root = ET.fromstring(rels_bytes)
                 for child in rels_root:
-                    if child.get('Id', '') in used_img_rIds:
+                    if child.get('Id', '') in all_used_rIds:
                         target = child.get('Target', '')
                         if target:
                             used_media_paths.add(os.path.normpath(os.path.join(
                                 draw_base, target
                             )))
-                for media_path in used_media_paths:
-                    if media_path in media_files:
-                        dst = os.path.join(tmp_dir, media_path)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        with open(dst, 'wb') as f:
-                            f.write(media_files[media_path])
+            for media_path in used_media_paths:
+                if media_path in media_files:
+                    dst = os.path.join(tmp_dir, media_path)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(dst, 'wb') as f:
+                        f.write(media_files[media_path])
         else:
             # 全部复制
             for rel_path, blob in media_files.items():

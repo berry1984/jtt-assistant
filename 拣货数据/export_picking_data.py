@@ -425,8 +425,6 @@ def _style_data_cell(cell):
             cell.alignment = ALIGN_WRAP
         else:
             cell.alignment = ALIGN_LEFT
-
-
 def _write_output_to_template(output_rows, template_file, output_path):
     """将输出行数据写入模板并保存"""
     wb = openpyxl.load_workbook(template_file)
@@ -509,6 +507,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
             if all(v is None for v in [v_val, w_val, x_val, y_val]):
                 for col in [22, 23, 24, 25]:
                     ws.cell(row=r, column=col).fill = red_fill
+
             elif v_val is None: ws.cell(row=r, column=22).fill = red_fill
             elif w_val is None: ws.cell(row=r, column=23).fill = red_fill
             elif x_val is None: ws.cell(row=r, column=24).fill = red_fill
@@ -537,6 +536,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
             _style_data_cell(cell_ac)
             # 行高
             ws.row_dimensions[r].height = 30
+
             current_row += 1
         if start_row < current_row - 1:
             ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
@@ -547,6 +547,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
     # ── 设置表头行高（如果模板未设置） ──
     if ws.row_dimensions[1].height is None or ws.row_dimensions[1].height < 28:
         ws.row_dimensions[1].height = 28
+
     wb.save(output_path)
     print(f"  ✅ 已保存: {output_path}")
 
