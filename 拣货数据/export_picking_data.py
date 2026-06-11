@@ -121,6 +121,8 @@ def parse_invoice(filepath):
             'height': ws.cell(row=r, column=5).value,      # E
             'en_name': ws.cell(row=r, column=6).value,     # F
             'cn_name': ws.cell(row=r, column=7).value,     # G
+            'warehouse': warehouse,  # 每行携带自己的仓库代码
+            'service': service,      # 每行携带自己的物流渠道
         }
         data_rows.append(row)
 
@@ -345,14 +347,16 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
-        # 从报价单查找 E/F/G（按仓库代码匹配）
-        q_info = quotation_data.get(warehouse, {})
+        # 使用每行自己的仓库代码匹配报价单（多发票时各行仓库可能不同）
+        row_wh = row.get('warehouse', warehouse)
+        row_svc = row.get('service', service)
+        q_info = quotation_data.get(row_wh, {})
 
         out = {
             'so_no': so_no,
-            'service': service,
-            'country': country_from_warehouse(warehouse),
-            'warehouse': warehouse,
+            'service': row_svc,
+            'country': country_from_warehouse(row_wh),
+            'warehouse': row_wh,
             'e_price': q_info.get('e_price', ''),
             'f_price': q_info.get('f_price', ''),
             'supplier_ch': q_info.get('supplier_ch', ''),
@@ -605,14 +609,16 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
         hm = find_history_match(history_records, cn_name, weight, length, width, height)
 
-        # 从报价单查找 E/F/G（按仓库代码匹配）
-        q_info = quotation_data.get(warehouse, {})
+        # 使用每行自己的仓库代码匹配报价单（多发票时各行仓库可能不同）
+        row_wh = row.get('warehouse', warehouse)
+        row_svc = row.get('service', service)
+        q_info = quotation_data.get(row_wh, {})
 
         out = {
             'so_no': so_no,
-            'service': service,
-            'country': country_from_warehouse(warehouse),
-            'warehouse': warehouse,
+            'service': row_svc,
+            'country': country_from_warehouse(row_wh),
+            'warehouse': row_wh,
             'e_price': q_info.get('e_price', ''),
             'f_price': q_info.get('f_price', ''),
             'supplier_ch': q_info.get('supplier_ch', ''),
