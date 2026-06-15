@@ -155,9 +155,7 @@ def generate():
 
         orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
         rows = build_rows(orders, picks, prices)
-        rows = sort_rows(rows)
-
-        # 日期范围
+        rows = sort_rows(rows, declaration_groups=declaration_groups)
         date_serials = []
         for o in orders.values():
             d = o.get('发货日期', o.get('工作日期'))
