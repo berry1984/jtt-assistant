@@ -385,53 +385,69 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     if current_ch is not None:
         channel_groups.append((current_ch, start_row, 4 + n - 1))
 
-    # Apply customs fee based on declaration count per channel group
+    # Apply customs fee: one S=350/1.06 per declaration group, per channel group
     for ch, s_row, e_row in channel_groups:
-        # Count how many declaration groups fall within this channel group
         if has_decl_info:
-            channel_whs = set()
+            # Per declaration group: put 350/1.06 on the first occurrence row
+            seen_decls = set()
             for i in range(s_row - 4, e_row - 3):
-                channel_whs.add(rows[i]['wh'])
-            decl_indices = set()
-            for wh_code in channel_whs:
+                rn = 4 + i  # Excel row number
+                wh_code = rows[i]['wh']
                 d_idx = wh_to_decl.get(wh_code)
-                if d_idx is not None:
-                    decl_indices.add(d_idx)
-            decl_count = len(decl_indices) if decl_indices else 1
+
+                cell_s = ws[f'S{rn}']
+                cell_s.font = data_font
+                cell_s.alignment = center
+                cell_s.border = thin_border
+                cell_s.number_format = '#,##0.00'
+
+                cell_t = ws[f'T{rn}']
+                cell_t.font = data_font
+                cell_t.alignment = center
+                cell_t.border = thin_border
+                cell_t.number_format = '#,##0.00'
+
+                if d_idx is not None and d_idx not in seen_decls:
+                    seen_decls.add(d_idx)
+                    cell_s.value = '=350/1.06'
+                    cell_t.value = f'=S{rn}*0.06'
+                    if 19 in template_fills:
+                        cell_s.fill = template_fills[19]
+                    if 20 in template_fills:
+                        cell_t.fill = template_fills[20]
+                else:
+                    cell_s.value = 0
+                    cell_t.value = 0
         else:
-            decl_count = 1  # 1 per channel group (backward compat)
+            # Backward compat: 1 customs per channel group, merged
+            cell_s = ws[f'S{s_row}']
+            cell_s.value = '=350/1.06'
+            cell_s.font = data_font
+            cell_s.alignment = center
+            cell_s.border = thin_border
+            cell_s.number_format = '#,##0.00'
+            if 19 in template_fills:
+                cell_s.fill = template_fills[19]
 
-        customs_val = f'={decl_count}*350/1.06' if decl_count > 1 else '=350/1.06'
+            cell_t = ws[f'T{s_row}']
+            cell_t.value = f'=S{s_row}*0.06'
+            cell_t.font = data_font
+            cell_t.alignment = center
+            cell_t.border = thin_border
+            cell_t.number_format = '#,##0.00'
+            if 20 in template_fills:
+                cell_t.fill = template_fills[20]
 
-        # First row gets the formula
-        cell_s = ws[f'S{s_row}']
-        cell_s.value = customs_val
-        cell_s.font = data_font
-        cell_s.alignment = center
-        cell_s.border = thin_border
-        cell_s.number_format = '#,##0.00'
-        if 19 in template_fills:
-            cell_s.fill = template_fills[19]
+            # Merge S and T across all rows of this channel group
+            if e_row > s_row:
+                ws.merge_cells(f'S{s_row}:S{e_row}')
+                ws.merge_cells(f'T{s_row}:T{e_row}')
 
-        cell_t = ws[f'T{s_row}']
-        cell_t.value = f'=S{s_row}*0.06'
-        cell_t.font = data_font
-        cell_t.alignment = center
-        cell_t.border = thin_border
-        cell_t.number_format = '#,##0.00'
-        if 20 in template_fills:
-            cell_t.fill = template_fills[20]
-
-        # Merge S and T columns across all rows of this channel group
-        if e_row > s_row:
-            ws.merge_cells(f'S{s_row}:S{e_row}')
-            ws.merge_cells(f'T{s_row}:T{e_row}')
-
-        # Add borders to merged cells
-        for rn in range(s_row, e_row + 1):
-            for cl in ['S', 'T']:
-                cell = ws[f'{cl}{rn}']
-                cell.border = thin_border
+            # Borders for merged cells
+            for rn in range(s_row, e_row + 1):
+                for cl in ['S', 'T']:
+                    cell = ws[f'{cl}{rn}']
+                    cell.border = thin_border
 
     # Apply template column fills to ALL data rows (after customs section)
     # ── Summary row (with blank separator before it, like correct bill) ──
