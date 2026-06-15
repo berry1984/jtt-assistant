@@ -142,7 +142,7 @@ def build_rows(orders, picks, prices):
     for so, o in sorted(orders.items()):
         service = o['服务']
         date_val = o.get('发货日期', o.get('工作日期', ''))
-        wh_code = clean_wh(o.get('收件人', ''))
+        wh_code = clean_wh(o.get('仓库代码', '') or o.get('收件人', ''))
         total_weight_order = to_num(o.get('收费重', 0))
         fba_ext = o['扩展单号'].split(',') if o['扩展单号'] else []
         so_picks = pick_groups.get(so, {})
