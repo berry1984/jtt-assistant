@@ -67,7 +67,32 @@ def load_data(order_path, pick_path, price_path):
             prices[wh] = {'channel': ch, 'price': price, 'customs_fee': customs or 0}
             price_rows_raw.append(vals)
 
-    return orders, picks, prices, price_rows_raw
+    # ── Count declaration groups from J column (报关费) ──
+    # J列非空值标记新报关组起点，后续空值行归入同一组
+    declaration_groups = []  # list of sets of warehouse codes per declaration
+    current_wh_set = None
+    for vals in price_rows_raw:
+        wh = vals[1]
+        if not wh:
+            continue
+        j_val = vals[9] if len(vals) > 9 else None
+        j_str = str(j_val or '').strip()
+        if j_str:  # non-empty J = new declaration group
+            if current_wh_set is not None:
+                declaration_groups.append(current_wh_set)
+            current_wh_set = {wh}
+        elif current_wh_set is not None:
+            current_wh_set.add(wh)
+    if current_wh_set is not None:
+        declaration_groups.append(current_wh_set)
+
+    # Fallback: 如果没有合并报关标记，按渠道分组（兼容旧数据）
+    if not declaration_groups:
+        unique_channels = set(v[0] for v in price_rows_raw if v[1])
+        for _ in unique_channels:
+            declaration_groups.append(set())
+
+    return orders, picks, prices, price_rows_raw, declaration_groups
 
 def lookup_price(prices, wh_code):
     """Look up price by warehouse code, with suffix matching"""
@@ -187,7 +212,7 @@ def sort_rows(rows):
     
     return sorted(rows, key=sort_key)
 
-def generate_bill(rows, output_path, template_path=None, title_str=None, date_range_str=None, price_rows_raw=None, year=None):
+def generate_bill(rows, output_path, template_path=None, title_str=None, date_range_str=None, price_rows_raw=None, year=None, declaration_groups=None):
     """Generate bill Excel file"""
     
     if template_path is None:
@@ -335,12 +360,20 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         # A column border
         ws[f'A{row_num}'].border = thin_border
     
-    # ── Customs fee: one per unique channel ──
+    # ── Customs fee: count declarations per channel group ──
+    # Build warehouse → declaration_index mapping
+    wh_to_decl = {}
+    if declaration_groups:
+        for d_idx, group in enumerate(declaration_groups):
+            for wh_code in group:
+                wh_to_decl[wh_code] = d_idx
+    has_decl_info = bool(declaration_groups and any(g for g in declaration_groups))
+
     # Find channel groups and their row ranges
     channel_groups = []
     current_ch = None
     start_row = None
-    
+
     for i, r in enumerate(rows):
         row_num = 4 + i
         ch = r['service']
@@ -351,12 +384,28 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
             start_row = row_num
     if current_ch is not None:
         channel_groups.append((current_ch, start_row, 4 + n - 1))
-    
-    # Apply customs fee (350/1.06) to first row of each channel group, merge S column
+
+    # Apply customs fee based on declaration count per channel group
     for ch, s_row, e_row in channel_groups:
+        # Count how many declaration groups fall within this channel group
+        if has_decl_info:
+            channel_whs = set()
+            for i in range(s_row - 4, e_row - 3):
+                channel_whs.add(rows[i]['wh'])
+            decl_indices = set()
+            for wh_code in channel_whs:
+                d_idx = wh_to_decl.get(wh_code)
+                if d_idx is not None:
+                    decl_indices.add(d_idx)
+            decl_count = len(decl_indices) if decl_indices else 1
+        else:
+            decl_count = 1  # 1 per channel group (backward compat)
+
+        customs_val = f'={decl_count}*350/1.06' if decl_count > 1 else '=350/1.06'
+
         # First row gets the formula
         cell_s = ws[f'S{s_row}']
-        cell_s.value = '=350/1.06'
+        cell_s.value = customs_val
         cell_s.font = data_font
         cell_s.alignment = center
         cell_s.border = thin_border
@@ -372,12 +421,12 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         cell_t.number_format = '#,##0.00'
         if 20 in template_fills:
             cell_t.fill = template_fills[20]
-        
+
         # Merge S and T columns across all rows of this channel group
         if e_row > s_row:
             ws.merge_cells(f'S{s_row}:S{e_row}')
             ws.merge_cells(f'T{s_row}:T{e_row}')
-        
+
         # Add borders to merged cells
         for rn in range(s_row, e_row + 1):
             for cl in ['S', 'T']:
@@ -581,8 +630,9 @@ def main():
     print(f"📂 应收价格: {price_path}")
 
     # Load
-    orders, picks, prices, price_rows_raw = load_data(order_path, pick_path, price_path)
+    orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
     print(f"✅ 订单: {len(orders)} 条, 拣货: {len(picks)} 条, 价格: {len(prices)} 条")
+    print(f"📋 报关组: {len(declaration_groups)} 组 (合并报关)" if declaration_groups and any(g for g in declaration_groups) else "")
 
     # Compute date range from orders
     date_serials = []
@@ -618,8 +668,7 @@ def main():
     sum_P = sum_O * 0.06
     sum_Q = sum(r['weight'] * r['unit_price'] * 0.35 for r in rows)
     sum_R = sum(r['weight'] * r['unit_price'] * 0.58 for r in rows)
-    channels = set(r['service'] for r in rows)
-    customs_count = len(channels)
+    customs_count = len(declaration_groups) if declaration_groups and any(g for g in declaration_groups) else len(set(r['service'] for r in rows))
     customs_S = customs_count * 350 / 1.06
     customs_T = customs_S * 0.06
     total = sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T
@@ -633,11 +682,11 @@ def main():
     print(f"📄 输出: {output_path}")
 
     # Generate bill
-    success = generate_bill(rows, output_path, title_str=title_str, date_range_str=date_range_str, price_rows_raw=price_rows_raw, year=year)
+    success = generate_bill(rows, output_path, title_str=title_str, date_range_str=date_range_str, price_rows_raw=price_rows_raw, year=year, declaration_groups=declaration_groups)
 
     if success:
         print(f"\n📊 费用汇总:")
-        print(f"   渠道数: {customs_count} (报关费 {customs_count}×330.19 = {customs_S:.2f})")
+        print(f"   报关组: {customs_count} (报关费 {customs_count}×330.19 = {customs_S:.2f})")
         print(f"   国内运费: {sum_O:.2f} → 含税 {sum_O+sum_P:.2f}")
         print(f"   国际运费: {sum_Q+sum_R:.2f}")
         print(f"   报关费:   {customs_S:.2f} → 含税 {customs_S+customs_T:.2f}")

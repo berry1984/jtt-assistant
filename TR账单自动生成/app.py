@@ -153,7 +153,7 @@ def generate():
         pick_file.save(pick_path)
         price_file.save(price_path)
 
-        orders, picks, prices, price_rows_raw = load_data(order_path, pick_path, price_path)
+        orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
         rows = build_rows(orders, picks, prices)
         rows = sort_rows(rows)
 
@@ -185,8 +185,8 @@ def generate():
         sum_P = sum_O * 0.06
         sum_Q = sum(safe_float(r.get('weight', 0)) * safe_float(r.get('unit_price', 0)) * 0.35 for r in rows)
         sum_R = sum(safe_float(r.get('weight', 0)) * safe_float(r.get('unit_price', 0)) * 0.58 for r in rows)
-        channels = set(r['service'] for r in rows)
-        customs_S = len(channels) * 350 / 1.06
+        customs_count = len(declaration_groups) if declaration_groups and any(g for g in declaration_groups) else len(set(r['service'] for r in rows))
+        customs_S = customs_count * 350 / 1.06
         customs_T = customs_S * 0.06
         total = round(sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T, 1)
 
@@ -195,7 +195,8 @@ def generate():
         output_path = os.path.join(tmp_dir, output_name)
 
         success = generate_bill(rows, output_path, title_str=title_str,
-                                date_range_str=date_range_str, price_rows_raw=price_rows_raw, year=year)
+                                date_range_str=date_range_str, price_rows_raw=price_rows_raw, year=year,
+                                declaration_groups=declaration_groups)
 
         if not success or not os.path.exists(output_path):
             flash('生成账单失败，请检查文件内容')
