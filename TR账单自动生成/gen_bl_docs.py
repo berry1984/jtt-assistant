@@ -15,6 +15,7 @@
 """
 
 import os, sys, io, zipfile, tempfile, shutil
+from collections import defaultdict
 from datetime import datetime, timedelta
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
@@ -27,6 +28,10 @@ BL_SEA = os.path.join(TEMPLATES_DIR, '提单By sea.pdf')
 BL_TRAIN = os.path.join(TEMPLATES_DIR, '提单By train.pdf')
 BL_TRUCK = os.path.join(TEMPLATES_DIR, '提单By truck.pdf')
 TELEX = os.path.join(TEMPLATES_DIR, '电放保函.xlsx')
+
+# Arial 字体路径（替代 Calibri，视觉接近）
+ARIAL_PATH = '/System/Library/Fonts/Supplemental/Arial.ttf'
+ARIAL_UNICODE_PATH = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf'
 
 
 # ═══════════════════════════════════════════════
@@ -126,6 +131,7 @@ def _data_fns():
         'ob_date':  lambda s: (_fmt_date(s.get('on board date', '')).strftime('%Y/%m/%d')
                                if isinstance(_fmt_date(s.get('on board date', '')), datetime)
                                else _safe_str(s.get('on board date', ''))),
+        'notify_party': lambda s: _safe_str(s.get('Notify party', '')).strip() or 'SAME AS CONSIGNEE',
     }
 
 
@@ -133,13 +139,13 @@ def _data_fns():
 #  电放保函生成
 # ═══════════════════════════════════════════════
 
-def _gen_telex(shipment, out_dir):
+def _gen_telex(shipment, out_dir, jtt_part=None, total_cartons=None):
     if not os.path.exists(TELEX):
         return None
 
-    jtt_no = _safe_str(shipment.get('JTT no.', ''))
+    jtt_no = jtt_part or _safe_str(shipment.get('JTT no.', ''))
     channel = _safe_str(shipment.get('渠道', ''))
-    cartons = shipment.get('cartons', 0) or 0
+    cartons = total_cartons if total_cartons is not None else (shipment.get('cartons', 0) or 0)
     bl_no = _safe_str(shipment.get('B/L No.', ''))
     vessel = _safe_str(shipment.get('Ocean Vessel', ''))
     voy = _safe_str(shipment.get('Voy.No', ''))
@@ -148,7 +154,7 @@ def _gen_telex(shipment, out_dir):
     shipper_name = _safe_str(shipment.get('Shipper', '')).split('\n')[0].strip()
     consignee_name = _safe_str(shipment.get('Consignee', '')).split('\n')[0].strip()
 
-    fname = f'{jtt_no}{_sanitize(channel)}{cartons}电放保函.xlsx'
+    fname = f'{jtt_no}{_sanitize(channel)}{cartons}件电放保函.xlsx'
     out_path = os.path.join(out_dir, fname)
 
     wb = openpyxl.load_workbook(TELEX)
@@ -189,18 +195,27 @@ def _get_bl_template(template_type):
 def _sea_train_fields(is_train=False):
     """By sea / By train 模板的清除矩形 + 文本插入点"""
     clear_rects = [
+        # B/L No
         (421, 55, 509, 66),
+        # Notify party data（在蓝标签 y=233-243 之下，Pre-carriage by 蓝标签 y=272 之上）
+        (52, 244, 250, 270),
+        # Place of receipt（单元格 y=286-300）
         (156, 288, 249, 299),
-        (52, 315, 154, 326),
-        (156, 315, 249, 326),
-        (52, 343, 158, 353),
-        (156, 343, 268, 353),
+        # Vessel + Port loading（单元格 y=313-327）
+        (52, 315, 154, 325),
+        (156, 315, 249, 325),
+        # Port discharge + Place delivery（单元格 y=341-354）
+        (52, 343, 158, 352),
+        (156, 343, 268, 352),
+        # Container No
         (52, 535, 118, 545),
+        # 货物表逐列（y=382-533，距蓝线 2px）
         (52, 384, 117, 531),
         (121, 384, 208, 531),
         (212, 384, 382, 531),
         (386, 384, 455, 531),
         (459, 384, 511, 531),
+        # 底部日期
         (426, 618, 473, 629),
         (395, 645, 455, 654),
         (164, 697, 213, 708),
@@ -208,22 +223,29 @@ def _sea_train_fields(is_train=False):
     if is_train:
         clear_rects.append((52, 314, 249, 326))
 
+    # 字体大小参照模板:
+    #   Calibri 10.6 → 改为 Arial 10.5（place_rcpt, port_load, port_disc, place_delv）
+    #   SimSun 10.5  → Arial 10.5（bl_no, container, notify_party）
+    #   SimSun 7.5   → Arial 10.5（vessel — 用户要求）
+    #   ArialMT 9    → Arial 9（marks, cartons, desc, cbm, dates）
+    #   Calibri 10.5 → Arial 10.5（kgs 数值部分）
     text_inserts = [
-        ((428, 67),   'bl_no',    9),
-        ((161, 298),  'place_rcpt', 11),
-        ((52, 322),   'vessel',   8),
-        ((161, 325),  'port_load', 11),
-        ((52, 352),   'port_disc', 11),
-        ((161, 352),  'place_delv', 11),
-        ((56, 544),   'container', 10),
-        ((77, 395),   'marks',    9),
-        ((130, 395),  'cartons',  9),
-        ((218, 395),  'desc',     9),
-        ((382, 395),  'kgs',      9),
-        ((459, 395),  'cbm',      9),
-        ((428, 628),  'ob_date',  9),
-        ((397, 654),  'pdi_date', 9),
-        ((166, 706),  'ob_date',  9),
+        ((428, 67),   'bl_no',        10.5),
+        ((56, 267),   'notify_party', 10.5),
+        ((161, 298),  'place_rcpt',   10.5),
+        ((52, 322),   'vessel',       10.5),
+        ((161, 325),  'port_load',    10.5),
+        ((52, 352),   'port_disc',    10.5),
+        ((161, 352),  'place_delv',   10.5),
+        ((56, 544),   'container',    10.5),
+        ((77, 395),   'marks',        9),
+        ((130, 395),  'cartons',      9),
+        ((218, 395),  'desc',         9),
+        ((382, 395),  'kgs',         10.5),
+        ((459, 395),  'cbm',          9),
+        ((428, 628),  'ob_date',      9),
+        ((397, 654),  'pdi_date',     9),
+        ((166, 706),  'ob_date',      9),
     ]
     return clear_rects, text_inserts
 
@@ -239,32 +261,32 @@ def _truck_fields():
         (180, 718, 240, 750),
     ]
     text_inserts = [
-        ((488, 18),   'bl_no',    10),
-        ((37, 292),   'vessel',   9),
-        ((202, 292),  'port_load', 9),
-        ((37, 316),   'port_disc', 9),
-        ((202, 316),  'place_delv', 9),
-        ((42, 360),   'container', 8),
-        ((46, 362),   'marks',    9),
-        ((298, 362),  'desc',     8),
-        ((435, 362),  'kgs',      8),
-        ((435, 372),  'cbm',      8),
-        ((380, 683),  'pdi_date', 9),
-        ((182, 739),  'ob_date',  9),
+        ((488, 18),   'bl_no',        10.5),
+        ((37, 292),   'vessel',       9),
+        ((202, 292),  'port_load',    9),
+        ((37, 316),   'port_disc',    9),
+        ((202, 316),  'place_delv',   9),
+        ((42, 360),   'container',    8),
+        ((46, 362),   'marks',        9),
+        ((298, 362),  'desc',         8),
+        ((435, 362),  'kgs',          8),
+        ((435, 372),  'cbm',          8),
+        ((380, 683),  'pdi_date',     9),
+        ((182, 739),  'ob_date',      9),
     ]
     return clear_rects, text_inserts
 
 
-def _gen_bl(shipment, out_dir):
+def _gen_bl(shipment, out_dir, jtt_part=None, total_cartons=None):
     template_type = _safe_str(shipment.get('引用模板', ''))
     template_path = _get_bl_template(template_type)
     if not template_path or not os.path.exists(template_path):
         return None
 
-    jtt_no = _safe_str(shipment.get('JTT no.', ''))
+    jtt_no = jtt_part or _safe_str(shipment.get('JTT no.', ''))
     channel = _safe_str(shipment.get('渠道', ''))
-    cartons = shipment.get('cartons', 0) or 0
-    fname = f'{jtt_no}{_sanitize(channel)}{cartons}提单.pdf'
+    cartons = total_cartons if total_cartons is not None else (shipment.get('cartons', 0) or 0)
+    fname = f'{jtt_no}{_sanitize(channel)}{cartons}件提单.pdf'
     out_path = os.path.join(out_dir, fname)
 
     F = _data_fns()
@@ -286,18 +308,85 @@ def _gen_bl(shipment, out_dir):
             page.add_redact_annot(fitz.Rect(*rect), fill=(1, 1, 1))
         page.apply_redactions()
 
-        # 阶段2：写入新数据
+        # 阶段2：写入新数据（所有文字使用 Arial 字体，与模板原始字体一致）
         for pt, field_key, fontsize in inserts:
             text = F[field_key](shipment)
             if text:
                 page.insert_text(fitz.Point(*pt), text, fontsize=fontsize,
-                                 fontname='helv', color=(0, 0, 0))
+                                 fontname='Arial', fontfile=ARIAL_PATH, color=(0, 0, 0))
 
         doc.save(out_path, garbage=4, deflate=True)
         doc.close()
         return out_path
     except Exception:
         return None
+
+
+# ═══════════════════════════════════════════════
+#  合并逻辑 — 同一 B/L No 的多票合并为一票
+# ═══════════════════════════════════════════════
+
+def _fmt_jtts(jtt_list):
+    """格式化 JTT 号列表用于文件名
+
+    单票: JTT202605000307
+    多票: JTT202605000364,353 （共享前缀 + 逗号分隔的序号）
+    """
+    if len(jtt_list) == 1:
+        return jtt_list[0]
+    # 所有 JTT 号格式: "JTT" + 年月日 + 序号，前12字符为公共前缀
+    # 格式化为: JTT202605000364,353
+    PREFIX_LEN = 12  # "JTT202605000"
+    prefix = jtt_list[0][:PREFIX_LEN]
+    if all(j.startswith(prefix) for j in jtt_list):
+        suffixes = [j[PREFIX_LEN:] for j in jtt_list]
+        return prefix + ','.join(suffixes)
+    # fallback: 用 os.path.commonprefix
+    prefix = os.path.commonprefix(jtt_list)
+    if len(prefix) >= 6:
+        suffixes = [j[len(prefix):] for j in jtt_list]
+        return prefix + ','.join(suffixes)
+    return ','.join(jtt_list)
+
+
+def _merge_shipments(group):
+    """合并同一 B/L 的多票货为一个 shipment dict
+
+    多行数据用 \\n 拼接，cartons/KGS/CBM 累加
+    """
+    merged = dict(group[0])
+
+    marks_list = []
+    desc_list = []
+    total_cartons = 0
+    total_kgs = 0.0
+    total_cbm = 0.0
+
+    for s in group:
+        m = str(s.get('Marks & No.', '') or '').strip()
+        if m and m not in marks_list:
+            marks_list.append(m)
+        d = str(s.get('Description of goods', '') or '').strip()
+        if d and d not in desc_list:
+            desc_list.append(d)
+        total_cartons += int(s.get('cartons', 0) or 0)
+        try:
+            total_kgs += float(s.get('KGS', 0) or 0)
+        except (ValueError, TypeError):
+            pass
+        try:
+            total_cbm += float(s.get('CBM', 0) or 0)
+        except (ValueError, TypeError):
+            pass
+
+    merged['Marks & No.'] = '\n'.join(marks_list) if marks_list else ''
+    merged['Description of goods'] = '\n'.join(desc_list) if desc_list else ''
+    merged['cartons'] = total_cartons
+    merged['KGS'] = round(total_kgs, 2)
+    merged['CBM'] = round(total_cbm, 3)
+
+    merged['_jtt_list'] = [str(s.get('JTT no.', '') or '').strip() for s in group]
+    return merged
 
 
 # ═══════════════════════════════════════════════
@@ -326,13 +415,33 @@ def generate_bl_docs(excel_path, output_dir=None):
     if not shipments:
         raise ValueError("Excel 中未找到有效的提单数据（需要 '5月提单信息' sheet，且含有效的 B/L No.）")
 
+    # 按 B/L No 分组（同一提单的多票合并输出）
+    bl_groups = defaultdict(list)
+    for s in shipments:
+        bl_no = _safe_str(s.get('B/L No.', '')).strip()
+        bl_groups[bl_no].append(s)
+
     # 生成所有文件到临时目录
     telex_ok = bl_ok = 0
-    for s in shipments:
-        if _gen_telex(s, output_dir):
-            telex_ok += 1
-        if _gen_bl(s, output_dir):
-            bl_ok += 1
+    for bl_no, group in bl_groups.items():
+        if len(group) == 1:
+            # 单票 — 直接生成
+            s = group[0]
+            jtt_no = _safe_str(s.get('JTT no.', ''))
+            cartons = int(s.get('cartons', 0) or 0)
+            if _gen_telex(s, output_dir, jtt_part=jtt_no, total_cartons=cartons):
+                telex_ok += 1
+            if _gen_bl(s, output_dir, jtt_part=jtt_no, total_cartons=cartons):
+                bl_ok += 1
+        else:
+            # 多票合并 — 汇总数据
+            merged = _merge_shipments(group)
+            jtt_part = _fmt_jtts(merged['_jtt_list'])
+            total_cartons = merged['cartons']
+            if _gen_telex(merged, output_dir, jtt_part=jtt_part, total_cartons=total_cartons):
+                telex_ok += 1
+            if _gen_bl(merged, output_dir, jtt_part=jtt_part, total_cartons=total_cartons):
+                bl_ok += 1
 
     if telex_ok == 0 and bl_ok == 0:
         raise ValueError("未能生成任何文件，请检查数据格式")
