@@ -151,6 +151,11 @@
     🛡️ 投保拆分
     <span class="badge">按RMB拆5区间</span>
   </button>
+  <button class="tab-btn {% if active_tab == 'bl_docs' %}active{% endif %}"
+          onclick="switchTab('bl_docs')">
+    📜 提单保函
+    <span class="badge">退税资料→PDF</span>
+  </button>
 </div>
 
 <div class="container">
@@ -363,6 +368,32 @@
     </form>
   </div>
 
+  <!-- ════════════════════════════════════════ -->
+  <!-- Tab: 提单及电放保函 -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'bl_docs' %}active{% endif %}" id="tab-bl_docs">
+
+    <div class="info-box">
+      <strong>📌 功能：</strong>上传「TR 退税资料明细」Excel → 自动生成<strong>提单 PDF</strong> + <strong>电放保函 xlsx</strong><br>
+      <strong>📎 要求：</strong>Excel 需包含 <code>5月提单信息</code> sheet，含 JTT no. / 引用模板 / B/L No. 等字段<br>
+      <strong>📎 输出：</strong>ZIP 包内含 提单(.pdf) + 电放保函(.xlsx)，按 JTT号+渠道+箱数 命名
+    </div>
+
+    <form method="post" action="/generate_bl_docs" enctype="multipart/form-data" id="blDocsForm">
+      <div class="form-group">
+        <label>TR 退税资料明细 <small>(.xlsx，含「5月提单信息」sheet)</small></label>
+        <div class="file-input-wrapper" id="bldw1">
+          <input type="file" name="excel_file" accept=".xlsx" required
+                 onchange="updateLabel(this, 'bldw1')">
+          <div class="icon">📄</div>
+          <div class="hint">点击上传 TR 退税资料明细 Excel</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="blDocsBtn">生成提单及电放保函 · 下载 ZIP</button>
+    </form>
+  </div>
+
   <div class="footer">JTT电商AI助手 v1.0</div>
 </div>
 
@@ -374,7 +405,7 @@ function switchTab(name) {
   document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // URL 更新
-  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance'};
+  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance', bl_docs: '/bl_docs'};
   history.replaceState(null, '', urls[name] || '/');
 }
 
@@ -419,6 +450,7 @@ const FORM_CONFIG = {
   srForm:       { btnId: 'srBtn',       loading: '⏳ 生成思锐账单...', done: '✅ 生成完成' },
   pickingForm:  { btnId: 'pickingBtn',  loading: '⏳ 导出中...',     done: '✅ 导出完成' },
   insuranceForm:{ btnId: 'insuranceBtn',loading: '⏳ 拆分中...',     done: '✅ 拆分完成' },
+  blDocsForm:   { btnId: 'blDocsBtn',  loading: '⏳ 生成文件中...',  done: '✅ 生成完成' },
 };
 
 function resetBtn(btn, originalText) {

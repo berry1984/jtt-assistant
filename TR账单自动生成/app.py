@@ -31,6 +31,9 @@ sys.path.insert(0, INVOICE_DIR)
 from gen_bill import load_data, build_rows, sort_rows, generate_bill
 from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
 
+# ── 提单及电放保函生成模块 ──
+from gen_bl_docs import generate_bl_docs
+
 # ── 思锐(SR)账单生成模块（延迟导入，避免启动时依赖缺失） ──
 SR_DIR = os.path.join(PROJECT_DIR, 'SR账单自动生成')
 sys.path.insert(0, PROJECT_DIR)
@@ -552,6 +555,48 @@ def insurance_split():
         atexit.register(cleanup)
 
 
+# ═══════════════════════════════════════════════
+#  功能6：提单及电放保函生成
+# ═══════════════════════════════════════════════
+
+@app.route('/bl_docs', methods=['GET'])
+def bl_docs_page():
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='bl_docs')
+
+
+@app.route('/generate_bl_docs', methods=['POST'])
+def generate_bl_docs_route():
+    excel_file = request.files.get('excel_file')
+    if not excel_file or excel_file.filename == '':
+        flash('请上传 TR 退税资料明细 Excel 文件')
+        return redirect('/bl_docs')
+
+    tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
+    try:
+        excel_path = os.path.join(tmp_dir, 'data.xlsx')
+        excel_file.save(excel_path)
+
+        zip_path, telex_ok, bl_ok = generate_bl_docs(excel_path)
+
+        fname = os.path.basename(zip_path)
+        return send_file(zip_path,
+                         mimetype='application/zip',
+                         as_attachment=True,
+                         download_name=fname)
+
+    except Exception as e:
+        flash(f'生成出错: {str(e)}')
+        return redirect('/bl_docs')
+    finally:
+        def cleanup():
+            try:
+                shutil.rmtree(tmp_dir)
+            except Exception:
+                pass
+        import atexit
+        atexit.register(cleanup)
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("=" * 50)
@@ -562,5 +607,6 @@ if __name__ == '__main__':
     print(f"  📄 发票转换  → http://localhost:{port}/invoice")
     print(f"  📦 拣货导出  → http://localhost:{port}/picking")
     print(f"  🛡️ 投保拆分  → http://localhost:{port}/insurance")
+    print(f"  📜 提单保函  → http://localhost:{port}/bl_docs")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port)
