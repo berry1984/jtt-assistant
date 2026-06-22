@@ -499,8 +499,15 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
       .then(res => {
         const cd = res.headers.get('Content-Disposition') || '';
         if (cd.includes('attachment')) {
-          const match = cd.match(/filename[^;=\n]*=((["']).*?\2|[^;\n]*)/);
-          const filename = match ? match[1].replace(/["']/g, '') : 'download.zip';
+          // 优先取 filename*（RFC 5987 UTF-8），再回退到 filename
+          let filename = 'download.zip';
+          const starMatch = cd.match(/filename\*=UTF-8''([^;\n]*)/);
+          if (starMatch) {
+            filename = decodeURIComponent(starMatch[1]);
+          } else {
+            const plainMatch = cd.match(/filename[^;=\n]*=((["']).*?\2|[^;\n]*)/);
+            filename = plainMatch ? plainMatch[1].replace(/["']/g, '') : 'download.zip';
+          }
 
           return res.blob().then(blob => {
             const url = URL.createObjectURL(blob);
