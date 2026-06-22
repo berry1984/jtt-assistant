@@ -530,7 +530,7 @@ def main():
 
     # Auto-generate filename
     output_path = sys.argv[4] if len(sys.argv) > 4 else \
-        f'5月拓锐FBA仓-分段开票账单-JTT({date_range_str}) RMB {total_rounded}.xlsx'
+        f'{datetime.now().month}月拓锐FBA仓-分段开票账单-JTT({date_range_str}) RMB {total_rounded}.xlsx'
 
     print(f"📄 输出: {output_path}")
 
