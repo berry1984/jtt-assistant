@@ -197,7 +197,7 @@ def _data_fns():
         'marks':    lambda s: _safe_str(s.get('Marks & No.', '')) or 'N/M',
         'cartons':  lambda s: str(int(s.get('cartons', 0) or 0)) + ' CARTONS',
         'desc':     lambda s: _safe_str(s.get('Description of goods', '')),
-        'kgs':      lambda s: (_safe_str(s.get('KGS', 0) or 0) + ' KGS') if s.get('KGS') else '',
+        'kgs':      lambda s: (_safe_str(s.get('KGS', 0) or 0) + '\nKGS') if s.get('KGS') else '',
         'cbm':      lambda s: (_safe_str(s.get('CBM', 0) or 0) + ' CBM') if s.get('CBM') else '',
         'pdi_date': lambda s: (_fmt_date(s.get('Place and date of issue', '')).strftime('%Y/%m/%d')
                                if isinstance(_fmt_date(s.get('Place and date of issue', '')), datetime)
@@ -316,7 +316,7 @@ def _sea_train_fields(is_train=False):
         ((77, 395),   'marks',        9,    58),
         ((130, 395),  'cartons',      9,    78),
         ((218, 395),  'desc',         9,   158),
-        ((382, 395),  'kgs',         10.5,  65),
+        ((390, 395),  'kgs',         10.5,  58),
         ((459, 395),  'cbm',          9,    48),
         ((428, 628),  'ob_date',      9,    42),
         ((397, 654),  'pdi_date',     9,    55),
