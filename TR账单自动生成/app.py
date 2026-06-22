@@ -18,7 +18,6 @@ import shutil
 import atexit
 import uuid
 from datetime import datetime, timedelta
-from urllib.parse import quote
 from flask import Flask, request, render_template, send_file, send_from_directory, flash, redirect, make_response
 
 # ── 模块路径 ──
@@ -206,9 +205,8 @@ def generate():
 
         response = make_response(send_file(output_path,
                                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
-        # 手动设置 Content-Disposition，确保中文文件名正确
-        response.headers['Content-Disposition'] = \
-            f"attachment; filename*=UTF-8''{quote(output_name, safe='')}"
+        # 中文字符直接放在 filename 参数中（Railway 代理会吞掉 filename* 的编码）
+        response.headers['Content-Disposition'] = f'attachment; filename="{output_name}"'
         return response
 
     except Exception as e:
