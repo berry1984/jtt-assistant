@@ -18,7 +18,7 @@ import shutil
 import atexit
 import uuid
 from datetime import datetime, timedelta
-from flask import Flask, request, render_template, send_file, send_from_directory, flash, redirect
+from flask import Flask, request, render_template, send_file, send_from_directory, flash, redirect, make_response
 
 # ── 模块路径 ──
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -579,10 +579,13 @@ def generate_bl_docs_route():
         zip_path, telex_ok, bl_ok = generate_bl_docs(excel_path)
 
         fname = os.path.basename(zip_path)
-        return send_file(zip_path,
+        response = make_response(send_file(zip_path,
                          mimetype='application/zip',
                          as_attachment=True,
-                         download_name=fname)
+                         download_name=fname))
+        response.headers['X-Telex-Count'] = str(telex_ok)
+        response.headers['X-Bl-Count'] = str(bl_ok)
+        return response
 
     except Exception as e:
         flash(f'生成出错: {str(e)}')

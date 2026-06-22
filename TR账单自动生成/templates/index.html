@@ -392,6 +392,9 @@
       </div>
       <button type="submit" class="btn btn-primary" id="blDocsBtn">生成提单及电放保函 · 下载 ZIP</button>
     </form>
+
+    <!-- 生成结果提示（动态显示） -->
+    <div id="blDocsResult" style="display:none; margin-top:20px; padding:16px; border-radius:10px; font-size:14px; line-height:1.6;"></div>
   </div>
 
   <div class="footer">JTT电商AI助手 v1.0</div>
@@ -450,13 +453,30 @@ const FORM_CONFIG = {
   srForm:       { btnId: 'srBtn',       loading: '⏳ 生成思锐账单...', done: '✅ 生成完成' },
   pickingForm:  { btnId: 'pickingBtn',  loading: '⏳ 导出中...',     done: '✅ 导出完成' },
   insuranceForm:{ btnId: 'insuranceBtn',loading: '⏳ 拆分中...',     done: '✅ 拆分完成' },
-  blDocsForm:   { btnId: 'blDocsBtn',  loading: '⏳ 生成文件中...',  done: '✅ 生成完成' },
+  blDocsForm:   { btnId: 'blDocsBtn',  loading: '⏳ 生成提单文件中...', done: '✅ 生成完成' },
 };
 
 function resetBtn(btn, originalText) {
   btn.disabled = false;
   btn.textContent = originalText;
   btn.classList.remove('loading');
+}
+
+function showBlDocsResult(type, msg, detail) {
+  const box = document.getElementById('blDocsResult');
+  if (!box) return;
+  box.style.display = 'block';
+  if (type === 'success') {
+    box.style.background = '#f0faf6';
+    box.style.border = '1px solid #4ecca3';
+    box.style.color = '#0a5c42';
+    box.innerHTML = '<strong style="font-size:16px;">' + msg + '</strong><br><span style="font-size:13px;">' + detail + '</span>';
+  } else {
+    box.style.background = '#fef2f2';
+    box.style.border = '1px solid #fecaca';
+    box.style.color = '#dc2626';
+    box.innerHTML = '<strong>' + msg + '</strong><br><span style="font-size:13px;">' + detail + '</span>';
+  }
 }
 
 Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
@@ -468,6 +488,9 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
   form.addEventListener('submit', function(e) {
     e.preventDefault();
 
+    const resultBox = document.getElementById('blDocsResult');
+    if (resultBox) resultBox.style.display = 'none';
+
     btn.disabled = true;
     btn.textContent = cfg.loading;
     btn.classList.add('loading');
@@ -476,8 +499,9 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
       .then(res => {
         const cd = res.headers.get('Content-Disposition') || '';
         if (cd.includes('attachment')) {
-          const match = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-          const filename = match ? match[1].replace(/['"]/g, '') : 'download.xlsx';
+          const match = cd.match(/filename[^;=\n]*=((["']).*?\2|[^;\n]*)/);
+          const filename = match ? match[1].replace(/["']/g, '') : 'download.zip';
+
           return res.blob().then(blob => {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -485,17 +509,48 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
             document.body.appendChild(a); a.click();
             a.remove(); URL.revokeObjectURL(url);
 
+            if (formId === 'blDocsForm') {
+              const telexCount = res.headers.get('X-Telex-Count') || '?';
+              const blCount = res.headers.get('X-Bl-Count') || '?';
+              showBlDocsResult('success',
+                '✅ 生成完成！' + blCount + ' 份提单 + ' + telexCount + ' 份电放保函',
+                '📁 文件：<strong>' + filename + '</strong><br>' +
+                '💾 请查看浏览器下载的 ZIP 文件（通常在「下载」文件夹）<br>' +
+                '📋 内含 提单PDF + 电放保函 xlsx，按 B/L 合并整理'
+              );
+            }
+
             btn.textContent = cfg.done;
             btn.classList.remove('loading');
             setTimeout(() => resetBtn(btn, originalText), 3000);
           });
         }
-        // 非文件响应（错误页面）→ 刷新页面显示 flash 消息
+        if (formId === 'blDocsForm') {
+          return res.text().then(html => {
+            const m = html.match(/flash-error[^>]*>([^<]+)/);
+            const errMsg = m ? m[1].trim() : '请检查 Excel 是否包含「提单信息」sheet';
+            showBlDocsResult('error', '生成失败', errMsg);
+            btn.disabled = false;
+            btn.textContent = originalText;
+            btn.classList.remove('loading');
+          });
+        }
         window.location.reload();
         return Promise.resolve();
       })
-      .catch(() => { window.location.reload(); });
+      .catch(() => {
+        if (formId === 'blDocsForm') {
+          showBlDocsResult('error', '网络错误', '请检查网络连接后重试');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          btn.classList.remove('loading');
+        } else {
+          window.location.reload();
+        }
+      });
   });
+});
+
 });
 </script>
 </body>
