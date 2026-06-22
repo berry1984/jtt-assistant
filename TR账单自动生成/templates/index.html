@@ -374,19 +374,19 @@
   <div class="tab-content {% if active_tab == 'bl_docs' %}active{% endif %}" id="tab-bl_docs">
 
     <div class="info-box">
-      <strong>📌 功能：</strong>上传「TR 退税资料明细」Excel → 自动生成<strong>提单 PDF</strong> + <strong>电放保函 xlsx</strong><br>
-      <strong>📎 要求：</strong>Excel 需包含 <code>5月提单信息</code> sheet，含 JTT no. / 引用模板 / B/L No. 等字段<br>
-      <strong>📎 输出：</strong>ZIP 包内含 提单(.pdf) + 电放保函(.xlsx)，按 JTT号+渠道+箱数 命名
+      <strong>📌 功能：</strong>上传含<strong>提单信息</strong>的 Excel → 自动生成<strong>提单 PDF</strong> + <strong>电放保函 xlsx</strong><br>
+      <strong>📎 要求：</strong>Sheet 需包含 <code>提单信息</code>（如 5月提单信息），含 JTT no. / 引用模板 / B/L No. 等字段<br>
+      <strong>📎 输出：</strong>ZIP 包内含 提单(.pdf) + 电放保函(.xlsx)，自动按 B/L 合并，文件名含单号+渠道+箱数
     </div>
 
     <form method="post" action="/generate_bl_docs" enctype="multipart/form-data" id="blDocsForm">
       <div class="form-group">
-        <label>TR 退税资料明细 <small>(.xlsx，含「5月提单信息」sheet)</small></label>
+        <label>含提单信息的 Excel <small>(.xlsx，需含「提单信息」sheet)</small></label>
         <div class="file-input-wrapper" id="bldw1">
           <input type="file" name="excel_file" accept=".xlsx" required
                  onchange="updateLabel(this, 'bldw1')">
           <div class="icon">📄</div>
-          <div class="hint">点击上传 TR 退税资料明细 Excel</div>
+          <div class="hint">点击上传含提单信息的 Excel 文件</div>
           <div class="filename"></div>
         </div>
       </div>

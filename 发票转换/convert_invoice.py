@@ -1066,22 +1066,23 @@ def batch_convert(input_dir, output_dir, target='天图'):
 
 def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None):
     """
-    后处理 xlsx 文件，将图片嵌入为单元格值。
+    后处理 xlsx 文件，将图片嵌入为 WPS Office 兼容格式。
 
-    始终做两件事：
-      1. 图片写入 xl/media/（离线后备，文件自带图片）
-      2. 单元格写入 _xlfn.IMAGE() 公式（Excel 365 "放置在单元格中"）
-
-    image_url_base: 如果提供，公式引用服务器 URL（在线时显示图片）；
-                    如果不提供，用 "0#" 内部引用（部分 Excel 版本可能不可用）。
+    生成：
+      1. xl/media/ - 图片文件
+      2. xl/cellimages.xml - WPS "放置在单元格中" 图片定义
+      3. xl/_rels/cellimages.xml.rels - 图片关系映射
+      4. 单元格写入 =DISPIMG("ID_xxx",1) 公式（WPS 兼容）
     """
     if not cell_image_map:
         return
 
-    ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
     NS_S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
     NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     NS_CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
+    NS_PKG = 'http://schemas.openxmlformats.org/package/2006/relationships'
+    NS_XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+    NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 
     tmp_dir = tempfile.mkdtemp()
     try:
@@ -1091,17 +1092,32 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
 
         sorted_refs = list(cell_image_map.items())
 
-        # ── 2. 写入图片到 xl/media/（离线后备）──
+        # ── 2. 写入图片到 xl/media/ ──
         media_dir = os.path.join(tmp_dir, 'xl', 'media')
         os.makedirs(media_dir, exist_ok=True)
-        img_filenames = {}
+        img_info = []  # [(cell_ref, dispimg_id, img_filename, img_bytes, col_0, row_0), ...]
         for i, (cell_ref, img_bytes) in enumerate(sorted_refs):
-            img_filename = f'image_tiantu_{i+1}.png'
+            import re
+            m = re.match(r'([A-Z]+)(\d+)', cell_ref)
+            if not m:
+                print(f'  ⚠️  无法解析单元格引用 {cell_ref}')
+                continue
+            col_letters, row_num = m.group(1), m.group(2)
+            # 列字母 → 0-based 数字
+            col_0 = 0
+            for ch in col_letters:
+                col_0 = col_0 * 26 + (ord(ch) - ord('A') + 1)
+            col_0 -= 1
+            row_0 = int(row_num) - 1
+
+            img_filename = f'image_{i+1}.png'
             with open(os.path.join(media_dir, img_filename), 'wb') as f:
                 f.write(img_bytes)
-            img_filenames[cell_ref] = img_filename
 
-        # ── 3. 修改 sheet1.xml：写入 IMAGE 公式 ──
+            dispimg_id = f'ID_img_{i+1}'
+            img_info.append((cell_ref, dispimg_id, img_filename, img_bytes, col_0, row_0))
+
+        # ── 3. 修改 sheet1.xml：写入 DISPIMG 公式 ──
         sheet_path = os.path.join(tmp_dir, 'xl', 'worksheets', 'sheet1.xml')
         if not os.path.exists(sheet_path):
             print(f'  ⚠️  sheet1.xml 不存在，跳过图片嵌入')
@@ -1109,50 +1125,32 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
 
         tree = ET.parse(sheet_path)
         root = tree.getroot()
-
-        # 获取最后一个行号，用于创建新行引用
-        sheet_rels = []
         for child in root:
             tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
             if tag == 'sheetData':
                 sheetData = child
                 break
 
-        for cell_ref, img_bytes in sorted_refs:
-            img_filename = img_filenames[cell_ref]
+        for cell_ref, dispimg_id, img_filename, img_bytes, col_0, row_0 in img_info:
             cell = root.find(f'.//{{{NS_S}}}c[@r="{cell_ref}"]')
             if cell is not None:
                 for child in list(cell):
                     cell.remove(child)
             else:
-                # 创建新单元格
-                max_row = 0
-                for row_elem in sheetData.findall(f'{{{NS_S}}}row'):
-                    r_attr = row_elem.get('r', '0')
-                    try:
-                        max_row = max(max_row, int(r_attr))
-                    except:
-                        pass
-                # 从cell_ref解析行号
-                import re
                 m = re.match(r'([A-Z]+)(\d+)', cell_ref)
                 if not m:
-                    print(f'  ⚠️  无法解析单元格引用 {cell_ref}')
                     continue
                 col_letters, row_num = m.group(1), m.group(2)
-                # 查找或创建行
                 row_elem = sheetData.find(f'{{{NS_S}}}row[@r="{row_num}"]')
                 if row_elem is None:
                     row_elem = ET.SubElement(sheetData, f'{{{NS_S}}}row')
                     row_elem.set('r', row_num)
                 cell = ET.SubElement(row_elem, f'{{{NS_S}}}c')
                 cell.set('r', cell_ref)
-            # 写入IMAGE公式
+            # 写入 DISPIMG 公式（WPS 兼容）
             f_elem = ET.SubElement(cell, f'{{{NS_S}}}f')
-            if image_url_base:
-                f_elem.text = f'_xlfn.IMAGE("{image_url_base}/{img_filename}", "", 0)'
-            else:
-                f_elem.text = f'_xlfn.IMAGE("0#{img_filename}", "", 0)'
+            f_elem.text = f'=DISPIMG("{dispimg_id}",1)'
+            f_elem.set('t', 'shared')
             if 't' in cell.attrib:
                 del cell.attrib['t']
             if 's' in cell.attrib:
@@ -1160,66 +1158,149 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
 
         tree.write(sheet_path, xml_declaration=True, encoding='UTF-8')
 
-        # ── 4. 补充 Content_Types ──
+        # ── 4. 生成 xl/cellimages.xml（WPS 图片定义）──
+        cellimages_root = ET.Element(f'{{{NS_XDR}}}wsDr')
+        cellimages_root.set('xmlns:xdr', NS_XDR)
+        cellimages_root.set('xmlns:a', NS_A)
+        cellimages_root.set('xmlns:r', NS_R)
+
+        for i, (cell_ref, dispimg_id, img_filename, img_bytes, col_0, row_0) in enumerate(img_info):
+            rId = f'rId{i+1}'
+
+            # twoCellAnchor
+            anchor = ET.SubElement(cellimages_root, f'{{{NS_XDR}}}twoCellAnchor')
+
+            # from
+            frm = ET.SubElement(anchor, f'{{{NS_XDR}}}from')
+            c_col = ET.SubElement(frm, f'{{{NS_XDR}}}col')
+            c_col.text = str(col_0)
+            c_colOff = ET.SubElement(frm, f'{{{NS_XDR}}}colOff')
+            c_colOff.text = '0'
+            c_row = ET.SubElement(frm, f'{{{NS_XDR}}}row')
+            c_row.text = str(row_0)
+            c_rowOff = ET.SubElement(frm, f'{{{NS_XDR}}}rowOff')
+            c_rowOff.text = '0'
+
+            # to
+            to = ET.SubElement(anchor, f'{{{NS_XDR}}}to')
+            t_col = ET.SubElement(to, f'{{{NS_XDR}}}col')
+            t_col.text = str(col_0 + 1)
+            t_colOff = ET.SubElement(to, f'{{{NS_XDR}}}colOff')
+            t_colOff.text = '0'
+            t_row = ET.SubElement(to, f'{{{NS_XDR}}}row')
+            t_row.text = str(row_0 + 1)
+            t_rowOff = ET.SubElement(to, f'{{{NS_XDR}}}rowOff')
+            t_rowOff.text = '0'
+
+            # pic
+            pic = ET.SubElement(anchor, f'{{{NS_XDR}}}pic')
+
+            # nvPicPr
+            nvPicPr = ET.SubElement(pic, f'{{{NS_XDR}}}nvPicPr')
+            cNvPr = ET.SubElement(nvPicPr, f'{{{NS_XDR}}}cNvPr')
+            cNvPr.set('name', dispimg_id)
+            cNvPr.set('id', str(i))
+            nvPr = ET.SubElement(nvPicPr, f'{{{NS_XDR}}}nvPr')
+
+            # blipFill
+            blipFill = ET.SubElement(pic, f'{{{NS_XDR}}}blipFill')
+            blip = ET.SubElement(blipFill, f'{{{NS_A}}}blip')
+            blip.set(f'{{{NS_R}}}embed', rId)
+            srcRect = ET.SubElement(blipFill, f'{{{NS_XDR}}}srcRect')
+            stretch = ET.SubElement(blipFill, f'{{{NS_XDR}}}stretch')
+            fillRect = ET.SubElement(stretch, f'{{{NS_XDR}}}fillRect')
+
+            # spPr
+            spPr = ET.SubElement(pic, f'{{{NS_XDR}}}spPr')
+            xfrm = ET.SubElement(spPr, f'{{{NS_A}}}xfrm')
+            off = ET.SubElement(xfrm, f'{{{NS_A}}}off')
+            off.set('x', '0')
+            off.set('y', '0')
+            ext = ET.SubElement(xfrm, f'{{{NS_A}}}ext')
+            ext.set('cx', '0')
+            ext.set('cy', '0')
+            prstGeom = ET.SubElement(spPr, f'{{{NS_A}}}prstGeom')
+            prstGeom.set('prst', 'rect')
+            avLst = ET.SubElement(prstGeom, f'{{{NS_A}}}avLst')
+
+            # clientData
+            clientData = ET.SubElement(anchor, f'{{{NS_XDR}}}clientData')
+
+        cellimages_path = os.path.join(tmp_dir, 'xl', 'cellimages.xml')
+        cellimages_tree = ET.ElementTree(cellimages_root)
+        cellimages_tree.write(cellimages_path, xml_declaration=True, encoding='UTF-8')
+
+        # ── 5. 生成 xl/_rels/cellimages.xml.rels ──
+        ci_rels_dir = os.path.join(tmp_dir, 'xl', '_rels')
+        os.makedirs(ci_rels_dir, exist_ok=True)
+        ci_rels_root = ET.Element(f'{{{NS_PKG}}}Relationships')
+        ci_rels_root.set('xmlns', NS_PKG)
+
+        for i, (cell_ref, dispimg_id, img_filename, img_bytes, col_0, row_0) in enumerate(img_info):
+            rel_elem = ET.SubElement(ci_rels_root, 'Relationship')
+            rel_elem.set('Id', f'rId{i+1}')
+            rel_elem.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image')
+            rel_elem.set('Target', f'media/{img_filename}')
+
+        ci_rels_path = os.path.join(ci_rels_dir, 'cellimages.xml.rels')
+        ci_rels_tree = ET.ElementTree(ci_rels_root)
+        ci_rels_tree.write(ci_rels_path, xml_declaration=True, encoding='UTF-8')
+
+        # ── 6. 补充 Content_Types ──
         ct_path = os.path.join(tmp_dir, '[Content_Types].xml')
         if os.path.exists(ct_path):
             ct_tree = ET.parse(ct_path)
             ct_root = ct_tree.getroot()
-            exists = False
+            # PNG Default
+            has_png = False
             for default in ct_root.findall(f'{{{NS_CT}}}Default'):
                 if default.get('Extension') == 'png':
-                    exists = True
+                    has_png = True
                     break
-            if not exists:
+            if not has_png:
                 png_default = ET.SubElement(ct_root, f'{{{NS_CT}}}Default')
                 png_default.set('Extension', 'png')
                 png_default.set('ContentType', 'image/png')
+            # cellimages.xml Override
+            has_ci = False
+            for override in ct_root.findall(f'{{{NS_CT}}}Override'):
+                if override.get('PartName') == '/xl/cellimages.xml':
+                    has_ci = True
+                    break
+            if not has_ci:
+                ci_override = ET.SubElement(ct_root, f'{{{NS_CT}}}Override')
+                ci_override.set('PartName', '/xl/cellimages.xml')
+                ci_override.set('ContentType', 'application/vnd.openxmlformats-officedocument.spreadsheetml.cellImages+xml')
             ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8')
 
-        # ── 5. 添加 sheet → media 关系 ──
-        sheet_rels_dir = os.path.join(tmp_dir, 'xl', 'worksheets', '_rels')
-        os.makedirs(sheet_rels_dir, exist_ok=True)
-        rels_path = os.path.join(sheet_rels_dir, 'sheet1.xml.rels')
-
-        next_rId = 1
-        existing_rels = {}
-        if os.path.exists(rels_path):
-            rels_tree = ET.parse(rels_path)
-            rels_root = rels_tree.getroot()
-            for rel_elem in rels_root:
+        # ── 7. 添加 workbook 对 cellimages.xml 的关系 ──
+        wb_rels_path = os.path.join(tmp_dir, 'xl', '_rels', 'workbook.xml.rels')
+        if os.path.exists(wb_rels_path):
+            wb_rels_tree = ET.parse(wb_rels_path)
+            wb_rels_root = wb_rels_tree.getroot()
+            # 获取命名空间（rels 文件使用 package/2006/relationships）
+            ns_pkg_tag = wb_rels_root.tag.split('}')[0] + '}' if '}' in wb_rels_root.tag else ''
+            # 找到最大的 rId
+            next_wb_rId = 1
+            existing_wb_targets = set()
+            for rel_elem in wb_rels_root:
                 rid = rel_elem.get('Id', '')
                 if rid.startswith('rId'):
                     try:
                         num = int(rid[3:])
-                        next_rId = max(next_rId, num + 1)
+                        next_wb_rId = max(next_wb_rId, num + 1)
                     except:
                         pass
-                existing_rels[rid] = rel_elem
-        else:
-            rels_root = ET.Element('Relationships')
-            rels_root.set('xmlns', NS_R)
+                tgt = rel_elem.get('Target', '')
+                existing_wb_targets.add(tgt)
+            if 'cellimages.xml' not in str(existing_wb_targets):
+                rel_elem = ET.SubElement(wb_rels_root, f'{ns_pkg_tag}Relationship')
+                rel_elem.set('Id', f'rId{next_wb_rId}')
+                rel_elem.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/cellImages')
+                rel_elem.set('Target', 'cellimages.xml')
+                wb_rels_tree.write(wb_rels_path, xml_declaration=True, encoding='UTF-8')
 
-        existing_targets = set()
-        for rid, elem in existing_rels.items():
-            tgt = elem.get('Target', '')
-            existing_targets.add(tgt)
-
-        for cell_ref, img_bytes in sorted_refs:
-            img_filename = img_filenames[cell_ref]
-            rel_target = f'../media/{img_filename}'
-            if rel_target in existing_targets:
-                continue
-            rel_elem = ET.SubElement(rels_root, 'Relationship')
-            rel_elem.set('Id', f'rId{next_rId}')
-            rel_elem.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image')
-            rel_elem.set('Target', rel_target)
-            existing_targets.add(rel_target)
-            next_rId += 1
-
-        rels_tree = ET.ElementTree(rels_root)
-        rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8')
-
-        # ── 6. 重新打包 ──
+        # ── 8. 重新打包 ──
         final_path = xlsx_path + '.tmp'
         with zipfile.ZipFile(final_path, 'w', zipfile.ZIP_DEFLATED) as zout:
             for dirpath, dirnames, filenames in os.walk(tmp_dir):
@@ -1230,8 +1311,7 @@ def _embed_images_as_cell_images(xlsx_path, cell_image_map, image_url_base=None)
 
         shutil.move(final_path, xlsx_path)
 
-        mode = f'IMAGE 公式 + 服务器 URL + xl/media/ 后备' if image_url_base else '0# 内部引用 + xl/media/'
-        print(f'  📷 已嵌入 {len(cell_image_map)} 张图片（{mode}）')
+        print(f'  📷 已嵌入 {len(img_info)} 张图片（WPS DISPIMG + xl/cellimages.xml）')
 
     except Exception as e:
         print(f'  ⚠️  图片嵌入后处理出错: {e}')

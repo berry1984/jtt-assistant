@@ -568,7 +568,7 @@ def bl_docs_page():
 def generate_bl_docs_route():
     excel_file = request.files.get('excel_file')
     if not excel_file or excel_file.filename == '':
-        flash('请上传 TR 退税资料明细 Excel 文件')
+        flash('请上传含提单信息的 Excel 文件')
         return redirect('/bl_docs')
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])

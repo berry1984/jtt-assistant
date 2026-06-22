@@ -67,18 +67,18 @@ def _sanitize(s):
 # ═══════════════════════════════════════════════
 
 def _load_shipments(excel_path):
-    """从 Excel 的 '5月提单信息' sheet 加载数据"""
+    """从 Excel 的含"提单信息"的 sheet 加载数据（不限制文件名和月份）"""
     wb = openpyxl.load_workbook(excel_path, data_only=True)
 
-    # 优先找含"提单"的 sheet，其次含"5月"+"提单"的
+    # 优先找含"提单信息"的 sheet → 其次含"提单" → 默认第一个
     sheet_name = None
     for sn in wb.sheetnames:
-        if '提单' in sn:
+        if '提单信息' in sn:
             sheet_name = sn
             break
     if not sheet_name:
         for sn in wb.sheetnames:
-            if '5月' in sn or '提单' in sn:
+            if '提单' in sn:
                 sheet_name = sn
                 break
     if not sheet_name:
