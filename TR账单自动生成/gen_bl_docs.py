@@ -64,6 +64,25 @@ def _get_font():
 #  工具函数
 # ═══════════════════════════════════════════════
 
+def _fit_text(page, text, point, font_name, font_file, fontsize, max_width, min_fontsize=5):
+    """写入文本，如果超宽则自动缩小字号直至能在 max_width（点）内放下"""
+    if not text:
+        return
+    size = fontsize
+    while size >= min_fontsize:
+        kw = dict(fontname=font_name, fontsize=size)
+        if font_file:
+            kw['fontfile'] = font_file
+        w = fitz.get_text_length(text, **kw)
+        if w <= max_width:
+            break
+        size -= 0.5
+    kwargs = dict(fontsize=size, fontname=font_name, color=(0, 0, 0))
+    if font_file:
+        kwargs['fontfile'] = font_file
+    page.insert_text(fitz.Point(*point), text, **kwargs)
+
+
 def _safe_str(v):
     if v is None:
         return ''
@@ -284,23 +303,24 @@ def _sea_train_fields(is_train=False):
     #   SimSun 7.5   → Arial 10.5（vessel — 用户要求）
     #   ArialMT 9    → Arial 9（marks, cartons, desc, cbm, dates）
     #   Calibri 10.5 → Arial 10.5（kgs 数值部分）
+    #   第5项 max_width（点）— 超出则自动缩小字号
     text_inserts = [
-        ((428, 67),   'bl_no',        10.5),
-        ((56, 267),   'notify_party', 10.5),
-        ((161, 298),  'place_rcpt',   10.5),
-        ((52, 322),   'vessel',       10.5),
-        ((161, 325),  'port_load',    10.5),
-        ((52, 352),   'port_disc',    10.5),
-        ((161, 352),  'place_delv',   10.5),
-        ((56, 544),   'container',    10.5),
-        ((77, 395),   'marks',        9),
-        ((130, 395),  'cartons',      9),
-        ((218, 395),  'desc',         9),
-        ((382, 395),  'kgs',         10.5),
-        ((459, 395),  'cbm',          9),
-        ((428, 628),  'ob_date',      9),
-        ((397, 654),  'pdi_date',     9),
-        ((166, 706),  'ob_date',      9),
+        ((428, 67),   'bl_no',        10.5, 85),
+        ((56, 267),   'notify_party', 10.5, 190),
+        ((161, 298),  'place_rcpt',   10.5, 85),
+        ((52, 322),   'vessel',       10.5, 98),
+        ((161, 325),  'port_load',    10.5, 85),
+        ((52, 352),   'port_disc',    10.5, 100),
+        ((161, 352),  'place_delv',   10.5, 105),
+        ((56, 544),   'container',    10.5, 60),
+        ((77, 395),   'marks',        9,    58),
+        ((130, 395),  'cartons',      9,    78),
+        ((218, 395),  'desc',         9,   158),
+        ((382, 395),  'kgs',         10.5,  65),
+        ((459, 395),  'cbm',          9,    48),
+        ((428, 628),  'ob_date',      9,    42),
+        ((397, 654),  'pdi_date',     9,    55),
+        ((166, 706),  'ob_date',      9,    45),
     ]
     return clear_rects, text_inserts
 
@@ -316,18 +336,18 @@ def _truck_fields():
         (180, 718, 240, 750),
     ]
     text_inserts = [
-        ((488, 18),   'bl_no',        10.5),
-        ((37, 292),   'vessel',       9),
-        ((202, 292),  'port_load',    9),
-        ((37, 316),   'port_disc',    9),
-        ((202, 316),  'place_delv',   9),
-        ((42, 360),   'container',    8),
-        ((46, 362),   'marks',        9),
-        ((298, 362),  'desc',         8),
-        ((435, 362),  'kgs',          8),
-        ((435, 372),  'cbm',          8),
-        ((380, 683),  'pdi_date',     9),
-        ((182, 739),  'ob_date',      9),
+        ((488, 18),   'bl_no',        10.5, 75),
+        ((37, 292),   'vessel',       9,   155),
+        ((202, 292),  'port_load',    9,   100),
+        ((37, 316),   'port_disc',    9,   155),
+        ((202, 316),  'place_delv',   9,   100),
+        ((42, 360),   'container',    8,   250),
+        ((46, 362),   'marks',        9,   245),
+        ((298, 362),  'desc',         8,   130),
+        ((435, 362),  'kgs',          8,   145),
+        ((435, 372),  'cbm',          8,   145),
+        ((380, 683),  'pdi_date',     9,    75),
+        ((182, 739),  'ob_date',      9,    52),
     ]
     return clear_rects, text_inserts
 
@@ -363,15 +383,12 @@ def _gen_bl(shipment, out_dir, jtt_part=None, total_cartons=None):
             page.add_redact_annot(fitz.Rect(*rect), fill=(1, 1, 1))
         page.apply_redactions()
 
-        # 阶段2：写入新数据（使用 Arial / 替代字体）
+        # 阶段2：写入新数据（使用 Arial / 替代字体，超宽自动缩小）
         font_name, font_file = _get_font()
-        for pt, field_key, fontsize in inserts:
+        for pt, field_key, fontsize, max_width in inserts:
             text = F[field_key](shipment)
             if text:
-                kwargs = dict(fontsize=fontsize, fontname=font_name, color=(0, 0, 0))
-                if font_file:
-                    kwargs['fontfile'] = font_file
-                page.insert_text(fitz.Point(*pt), text, **kwargs)
+                _fit_text(page, text, pt, font_name, font_file, fontsize, max_width)
 
         doc.save(out_path, garbage=4, deflate=True)
         doc.close()
