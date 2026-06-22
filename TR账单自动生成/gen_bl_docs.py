@@ -116,12 +116,41 @@ def _load_shipments(excel_path):
     for c in list(ws.iter_rows(min_row=1, max_row=1))[0]:
         headers.append(c.value)
 
+    # ── 向下填充：同组空白行继承上行的 B/L No / 渠道 / 模板 / 船名航次等 ──
+    FILL_DOWN_COLS = {
+        'B/L No.', '引用模板', '渠道',
+        'Ocean Vessel', 'Voy.No',
+        'Place of receipt', 'Port of loading',
+        'Port of discharge', 'Place of delivery',
+        'Container no.', 'collect',
+        'Place and date of issue', 'on board date',
+        'Shipper', 'Consignee', 'Notify party',
+    }
+
+    raw_rows = list(ws.iter_rows(min_row=2, values_only=True))
+
+    # 构建每列的 fill-down 缓存（从表头映射到列索引）
+    fill_cache = {}
+
     shipments = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    for row in raw_rows:
         d = dict(zip(headers, row))
         jtt_no = _safe_str(d.get('JTT no.', '')).strip()
+        if not jtt_no:
+            continue  # 完全空行直接跳过
+        # 跳过非 JTT 编号的行（如底部备注说明行）
+        if not jtt_no.startswith('JTT'):
+            continue
+
+        # 向下填充：属于填充列表且当前为 None 的列，从上一条缓存取值
+        for col_name in FILL_DOWN_COLS:
+            if col_name in d and d[col_name] is None and col_name in fill_cache:
+                d[col_name] = fill_cache[col_name]
+            elif col_name in d and d[col_name] is not None:
+                fill_cache[col_name] = d[col_name]
+
         template = _safe_str(d.get('引用模板', '')).strip()
-        if not jtt_no or not template:
+        if not template:
             continue
         # 跳过查验
         if _safe_str(d.get('Place of receipt', '')).strip() == '查验':
