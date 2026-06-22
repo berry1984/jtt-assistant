@@ -29,9 +29,35 @@ BL_TRAIN = os.path.join(TEMPLATES_DIR, '提单By train.pdf')
 BL_TRUCK = os.path.join(TEMPLATES_DIR, '提单By truck.pdf')
 TELEX = os.path.join(TEMPLATES_DIR, '电放保函.xlsx')
 
-# Arial 字体路径（替代 Calibri，视觉接近）
-ARIAL_PATH = '/System/Library/Fonts/Supplemental/Arial.ttf'
-ARIAL_UNICODE_PATH = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf'
+# ── 跨平台字体查找（macOS / Linux 通用） ──
+_FONT_CACHE = None  # (fontname, fontfile)
+
+def _get_font():
+    """返回 (fontname, fontfile) 用于 PyMuPDF insert_text。
+    优先找 Arial → Liberation Sans → DejaVu Sans → 内置 helv。"""
+    global _FONT_CACHE
+    if _FONT_CACHE:
+        return _FONT_CACHE
+    candidates = [
+        # macOS
+        ('Arial', '/System/Library/Fonts/Supplemental/Arial.ttf'),
+        ('Arial', '/Library/Fonts/Arial.ttf'),
+        # Linux: fonts-liberation (apt install fonts-liberation)
+        ('Arial', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'),
+        ('Arial', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf'),
+        # Linux: msttcorefonts
+        ('Arial', '/usr/share/fonts/truetype/msttcorefonts/Arial.ttf'),
+        # Linux: DejaVu Sans 作为兜底
+        ('DejaVu Sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        ('DejaVu Sans', '/usr/share/fonts/dejavu/DejaVuSans.ttf'),
+    ]
+    for fname, fpath in candidates:
+        if os.path.exists(fpath):
+            _FONT_CACHE = (fname, fpath)
+            return _FONT_CACHE
+    # 没有任何 TTF 时使用 PyMuPDF 内置 Helvetica
+    _FONT_CACHE = ('helv', None)
+    return _FONT_CACHE
 
 
 # ═══════════════════════════════════════════════
@@ -308,12 +334,15 @@ def _gen_bl(shipment, out_dir, jtt_part=None, total_cartons=None):
             page.add_redact_annot(fitz.Rect(*rect), fill=(1, 1, 1))
         page.apply_redactions()
 
-        # 阶段2：写入新数据（所有文字使用 Arial 字体，与模板原始字体一致）
+        # 阶段2：写入新数据（使用 Arial / 替代字体）
+        font_name, font_file = _get_font()
         for pt, field_key, fontsize in inserts:
             text = F[field_key](shipment)
             if text:
-                page.insert_text(fitz.Point(*pt), text, fontsize=fontsize,
-                                 fontname='Arial', fontfile=ARIAL_PATH, color=(0, 0, 0))
+                kwargs = dict(fontsize=fontsize, fontname=font_name, color=(0, 0, 0))
+                if font_file:
+                    kwargs['fontfile'] = font_file
+                page.insert_text(fitz.Point(*pt), text, **kwargs)
 
         doc.save(out_path, garbage=4, deflate=True)
         doc.close()
