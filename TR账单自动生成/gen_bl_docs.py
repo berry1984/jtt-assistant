@@ -218,8 +218,8 @@ def _gen_telex(shipment, out_dir, jtt_part=None, total_cartons=None):
     ws['E10'] = bl_no
     ws['E12'] = f'{vessel}/{voy}' if voy else vessel
     ws['E14'] = container
-    ws['A16'] = f'Shipper （发货人）                   :      {shipper_name}'
-    ws['A18'] = f'Consignee （收货人）              :    {consignee_name}'
+    ws['A16'] = 'Shipper （发货人）                   :'
+    ws['A18'] = 'Consignee （收货人）               :   '
 
     if isinstance(collect_date, datetime):
         m, d, y = collect_date.month, collect_date.day, collect_date.year
