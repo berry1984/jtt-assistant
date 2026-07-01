@@ -450,7 +450,6 @@ updateDesc();
 const FORM_CONFIG = {
   billForm:     { btnId: 'billBtn',     loading: '⏳ 生成中...',     done: '✅ 生成完成' },
   invoiceForm:  { btnId: 'invoiceBtn',  loading: '⏳ 转换中...',     done: '✅ 转换完成' },
-  srForm:       { btnId: 'srBtn',       loading: '⏳ 生成思锐账单...', done: '✅ 生成完成' },
   pickingForm:  { btnId: 'pickingBtn',  loading: '⏳ 导出中...',     done: '✅ 导出完成' },
   insuranceForm:{ btnId: 'insuranceBtn',loading: '⏳ 拆分中...',     done: '✅ 拆分完成' },
   blDocsForm:   { btnId: 'blDocsBtn',  loading: '⏳ 生成提单文件中...', done: '✅ 生成完成' },
@@ -557,6 +556,33 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
       });
   });
 });
+
+// ── 思锐(SR)表单：用隐藏iframe提交，绕过fetch的CORS/header限制 ──
+(function() {
+  const srForm = document.getElementById('srForm');
+  if (!srForm) return;
+  const btn = document.getElementById('srBtn');
+  const origText = btn.textContent;
+
+  // 创建隐藏iframe用于下载
+  const iframe = document.createElement('iframe');
+  iframe.name = 'sr_dl';
+  iframe.style.display = 'none';
+  document.body.appendChild(iframe);
+  srForm.target = 'sr_dl';
+
+  srForm.addEventListener('submit', function() {
+    btn.disabled = true;
+    btn.textContent = '⏳ 生成思锐账单...';
+    btn.classList.add('loading');
+    // 10秒后恢复按钮（下载已触发）
+    setTimeout(function() {
+      btn.disabled = false;
+      btn.textContent = origText;
+      btn.classList.remove('loading');
+    }, 10000);
+  });
+})();
 </script>
 </body>
 </html>
