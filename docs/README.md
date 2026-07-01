@@ -3,6 +3,17 @@
 > 在线版：[https://jtt-assistant-production.up.railway.app](https://jtt-assistant-production.up.railway.app)  
 > 本地启动：`cd TR账单自动生成 && python3 app.py`
 
+## 最近更新
+
+| 日期 | 变更 |
+|------|------|
+| 2026-07-01 | [📘 开发规范](dev-spec.md) 新增：涵盖技术栈/目录/接口/已知坑/恢复指南 |
+| 2026-07-01 | SR 账单：修复同费用类型覆盖→累加（税金多条分录只取最后一条 bug） |
+| 2026-07-01 | SR 表单：修复 fetch 下载不可用（改原生提交） |
+| 2026-06 | TR 账单：输出文件名动态月份；Web 中文文件名下载修复 |
+| 2026-06 | 发票转换：图片改用 twoCellAnchor 标准绘图嵌入 |
+| 2026-06 | 提单保函：新增功能（按 B/L 合并、Sheet 自动检测、ZIP 打包） |
+
 ## 六大功能
 
 | # | 功能 | Web 路径 | 脚本 | 文档 |
@@ -29,6 +40,11 @@ bb plan1/
 ├── docs/                   # 本文档目录
 └── .cursor/skills/         # Cursor Agent Skills
 ```
+
+## 开发参考
+
+→ [📘 **开发规范文档 (dev-spec.md)**](dev-spec.md)  
+包含：技术栈版本、目录结构、各模块接口、已知坑（中文下载/xlrd延迟/坐标偏移等）、运行命令、紧急恢复指南。
 
 ## Cursor Skills
 
