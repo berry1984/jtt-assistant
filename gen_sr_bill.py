@@ -109,9 +109,16 @@ def read_system_bill(xls_path):
         if ext_no and 'FBA' in ext_no and not wb_info['has_fba']:
             wb_info['has_fba'] = True
 
-        # 存储费用
+        # 存储费用（同费用类型累加，不覆盖）
         if fee_type:
-            wb_info['fees'][fee_type] = amount
+            def _to_float(v):
+                try:
+                    return float(v) if v else 0
+                except (ValueError, TypeError):
+                    return 0
+            amt = _to_float(amount)
+            existing = _to_float(wb_info['fees'].get(fee_type, 0))
+            wb_info['fees'][fee_type] = existing + amt
             if fee_type == '运费':
                 wb_info['fee_unit_prices'][fee_type] = unit_price
 
