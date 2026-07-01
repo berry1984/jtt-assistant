@@ -557,30 +557,25 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
   });
 });
 
-// ── 思锐(SR)表单：用隐藏iframe提交，绕过fetch的CORS/header限制 ──
+// ── 思锐(SR)表单：原生提交，让浏览器直接处理下载 ──
 (function() {
   const srForm = document.getElementById('srForm');
   if (!srForm) return;
   const btn = document.getElementById('srBtn');
   const origText = btn.textContent;
 
-  // 创建隐藏iframe用于下载
-  const iframe = document.createElement('iframe');
-  iframe.name = 'sr_dl';
-  iframe.style.display = 'none';
-  document.body.appendChild(iframe);
-  srForm.target = 'sr_dl';
-
   srForm.addEventListener('submit', function() {
     btn.disabled = true;
     btn.textContent = '⏳ 生成思锐账单...';
     btn.classList.add('loading');
-    // 10秒后恢复按钮（下载已触发）
+    // 15秒后恢复按钮
     setTimeout(function() {
       btn.disabled = false;
       btn.textContent = origText;
       btn.classList.remove('loading');
-    }, 10000);
+    }, 15000);
+    // 让表单原生提交，浏览器处理 Content-Disposition: attachment
+    return true;
   });
 })();
 </script>
