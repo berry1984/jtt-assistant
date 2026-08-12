@@ -11,7 +11,7 @@
   - 特殊服务(美国快递-*包税 等)：单箱 max(材积重,实际重量) 向上取整后按 FBA 合计，不匹配订单收费重
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - 保留完整浮点精度（使用公式）
-  - 排序：按渠道分组 → 有FBA标识的SO在前 → SO → FBA
+  - 排序：按渠道分组 → FBA列(箱号)含FBA字眼的运单在前 → SO → FBA
 """
 
 import sys, re, os, shutil, math
@@ -209,8 +209,8 @@ def build_rows(orders, picks, prices):
     return all_rows
 
 def sort_rows(rows, declaration_groups=None):
-    """Sort rows: by channel group; within a channel, SOs containing FBA标识 come first,
-    then SOs without; each group ordered by SO then FBA"""
+    """Sort rows: by channel group; within a channel, rows whose FBA column (箱号) contains
+    'FBA' come first, then rows without; each group ordered by SO then FBA"""
     # Determine channel group order (走货渠道 appearance order)
     seen = []
     for r in rows:
@@ -220,7 +220,8 @@ def sort_rows(rows, declaration_groups=None):
 
     def sort_key(r):
         ch_idx = seen.index(r['service']) if r['service'] in seen else 999
-        has_fba = 0 if 'FBA' in str(r['so']) else 1  # 有FBA标识靠前
+        # FBA列（箱号）含 "FBA" 字眼的运单靠前，无则排后
+        has_fba = 0 if 'FBA' in str(r['fba']) else 1
         return (ch_idx, has_fba, r['so'], r['fba'])
 
     return sorted(rows, key=sort_key)
