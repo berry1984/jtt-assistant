@@ -9,7 +9,7 @@
 规则：
   - J列(计费重) = ROUND(拣货收费重) 并调整最大项使合计匹配订单列表
   - 特殊服务(美国快递-*包税 等)：单箱 max(材积重,实际重量) 向上取整后按 FBA 合计，不匹配订单收费重
-  - S列(报关费) = 350/1.06, 每个唯一走货渠道收取一次（合并显示）
+  - S列(报关费) = 350/1.06, 按账单内 (走货渠道, SO) 分报关组，组内第一行显示金额，不合并
   - 保留完整浮点精度（使用公式）
   - 排序：按渠道分组 → SO → FBA
 """
@@ -76,30 +76,10 @@ def load_data(order_path, pick_path, price_path):
             prices[wh] = {'channel': ch, 'price': price, 'customs_fee': customs or 0}
             price_rows_raw.append(vals)
 
-    # ── Count declaration groups from J column (报关费) ──
-    # J列非空值标记新报关组起点，后续空值行归入同一组
-    declaration_groups = []  # list of sets of warehouse codes per declaration
-    current_wh_set = None
-    for vals in price_rows_raw:
-        wh = vals[1]
-        if not wh:
-            continue
-        j_val = vals[9] if len(vals) > 9 else None
-        j_str = str(j_val or '').strip()
-        if j_str:  # non-empty J = new declaration group
-            if current_wh_set is not None:
-                declaration_groups.append(current_wh_set)
-            current_wh_set = {wh}
-        elif current_wh_set is not None:
-            current_wh_set.add(wh)
-    if current_wh_set is not None:
-        declaration_groups.append(current_wh_set)
-
-    # Fallback: 如果没有合并报关标记，按渠道分组（兼容旧数据）
-    if not declaration_groups:
-        unique_channels = set(v[0] for v in price_rows_raw if v[1])
-        for _ in unique_channels:
-            declaration_groups.append(set())
+    # ── 报关分组规则：不再读取应收价格表 ──
+    # 报关组改为在生成账单时按账单内每行的 (走货渠道, SO) 直接判定（见 generate_bill），
+    # 因此这里不再读取应收价格表的 J 列做分组，固定返回空分组。
+    declaration_groups = []
 
     return orders, picks, prices, price_rows_raw, declaration_groups
 
@@ -229,14 +209,7 @@ def build_rows(orders, picks, prices):
     return all_rows
 
 def sort_rows(rows, declaration_groups=None):
-    """Sort rows: by channel group, then declaration group, then SO, then FBA"""
-    # Build warehouse → declaration_index mapping
-    wh_to_decl = {}
-    if declaration_groups:
-        for d_idx, group in enumerate(declaration_groups):
-            for wh_code in group:
-                wh_to_decl[wh_code] = d_idx
-
+    """Sort rows: by channel group, then SO, then FBA"""
     # Determine channel group order
     seen = []
     for r in rows:
@@ -246,8 +219,7 @@ def sort_rows(rows, declaration_groups=None):
 
     def sort_key(r):
         ch_idx = seen.index(r['service']) if r['service'] in seen else 999
-        decl_idx = wh_to_decl.get(r['wh'], 999) if wh_to_decl else 0
-        return (ch_idx, decl_idx, r['so'], r['fba'])
+        return (ch_idx, r['so'], r['fba'])
 
     return sorted(rows, key=sort_key)
 
@@ -399,116 +371,45 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         # A column border
         ws[f'A{row_num}'].border = thin_border
     
-    # ── Customs fee: count declarations per channel group ──
-    # Build warehouse → declaration_index mapping
-    wh_to_decl = {}
-    if declaration_groups:
-        for d_idx, group in enumerate(declaration_groups):
-            for wh_code in group:
-                wh_to_decl[wh_code] = d_idx
-    has_decl_info = bool(declaration_groups and any(g for g in declaration_groups))
-
-    # Find channel groups and their row ranges
-    channel_groups = []
-    current_ch = None
-    start_row = None
-
+    # ── Customs fee: group by (走货渠道, SO) ──
+    # 新规则：不读取应收价格表，直接按账单内每行「走货渠道 + SO」两列判定报关组。
+    # 走货渠道与 SO 均相同的行 = 一个报关组（行序已按 渠道→SO→FBA 排序，同组行必然相邻）；
+    # 组内第一行写 报关费(S)=350/1.06 与 报关税费(T)=S*0.06，其余行 S/T 置 0，
+    # 不做单元格合并。
+    prev_key = None
     for i, r in enumerate(rows):
-        row_num = 4 + i
-        ch = r['service']
-        if ch != current_ch:
-            if current_ch is not None:
-                channel_groups.append((current_ch, start_row, row_num - 1))
-            current_ch = ch
-            start_row = row_num
-    if current_ch is not None:
-        channel_groups.append((current_ch, start_row, 4 + n - 1))
+        rn = 4 + i
+        key = (r['service'], r['so'])
+        first_of_group = (key != prev_key)
+        prev_key = key
 
-    # Apply customs fee: merge S=350/1.06 per contiguous declaration block
-    for ch, s_row, e_row in channel_groups:
-        if has_decl_info:
-            # Find contiguous declaration sub-groups within this channel group
-            decl_subgroups = []  # (start_row, end_row, d_idx)
-            current_d_idx = None
-            sub_start = s_row
-            for i in range(s_row - 4, e_row - 3):
-                rn = 4 + i
-                wh_code = rows[i]['wh']
-                d_idx = wh_to_decl.get(wh_code, -1)
-                if d_idx != current_d_idx:
-                    if current_d_idx is not None:
-                        decl_subgroups.append((sub_start, rn - 1, current_d_idx))
-                    sub_start = rn
-                    current_d_idx = d_idx
-            if current_d_idx is not None:
-                decl_subgroups.append((sub_start, e_row, current_d_idx))
+        for cl in ['S', 'T']:
+            cell = ws[f'{cl}{rn}']
+            cell.border = thin_border
 
-            # Write S/T per sub-group, merge across each declaration block
-            for ds_row, de_row, d_idx in decl_subgroups:
-                if d_idx >= 0:
-                    # Declaration group: S=350/1.06 merged across the block
-                    ws[f'S{ds_row}'].value = '=350/1.06'
-                    ws[f'S{ds_row}'].font = data_font
-                    ws[f'S{ds_row}'].alignment = center
-                    ws[f'S{ds_row}'].number_format = '#,##0.00'
-                    if 19 in template_fills:
-                        ws[f'S{ds_row}'].fill = template_fills[19]
-
-                    ws[f'T{ds_row}'].value = f'=S{ds_row}*0.06'
-                    ws[f'T{ds_row}'].font = data_font
-                    ws[f'T{ds_row}'].alignment = center
-                    ws[f'T{ds_row}'].number_format = '#,##0.00'
-                    if 20 in template_fills:
-                        ws[f'T{ds_row}'].fill = template_fills[20]
-
-                    if de_row > ds_row:
-                        ws.merge_cells(f'S{ds_row}:S{de_row}')
-                        ws.merge_cells(f'T{ds_row}:T{de_row}')
-                else:
-                    # Not in any declaration group: zero out
-                    for rn in range(ds_row, de_row + 1):
-                        ws[f'S{rn}'].value = 0
-                        ws[f'T{rn}'].value = 0
-
-                # Borders for all cells in this sub-group
-                for rn in range(ds_row, de_row + 1):
-                    for cl in ['S', 'T']:
-                        cell = ws[f'{cl}{rn}']
-                        cell.border = thin_border
-                        if d_idx >= 0:
-                            cell.font = data_font
-                            cell.alignment = center
-                            cell.number_format = '#,##0.00'
-        else:
-            # Backward compat: 1 customs per channel group, merged
-            cell_s = ws[f'S{s_row}']
-            cell_s.value = '=350/1.06'
-            cell_s.font = data_font
-            cell_s.alignment = center
-            cell_s.border = thin_border
-            cell_s.number_format = '#,##0.00'
+        if first_of_group:
+            ws[f'S{rn}'].value = '=350/1.06'
+            ws[f'S{rn}'].font = data_font
+            ws[f'S{rn}'].alignment = center
+            ws[f'S{rn}'].number_format = '#,##0.00'
             if 19 in template_fills:
-                cell_s.fill = template_fills[19]
+                ws[f'S{rn}'].fill = template_fills[19]
 
-            cell_t = ws[f'T{s_row}']
-            cell_t.value = f'=S{s_row}*0.06'
-            cell_t.font = data_font
-            cell_t.alignment = center
-            cell_t.border = thin_border
-            cell_t.number_format = '#,##0.00'
+            ws[f'T{rn}'].value = f'=S{rn}*0.06'
+            ws[f'T{rn}'].font = data_font
+            ws[f'T{rn}'].alignment = center
+            ws[f'T{rn}'].number_format = '#,##0.00'
             if 20 in template_fills:
-                cell_t.fill = template_fills[20]
-
-            # Merge S and T across all rows of this channel group
-            if e_row > s_row:
-                ws.merge_cells(f'S{s_row}:S{e_row}')
-                ws.merge_cells(f'T{s_row}:T{e_row}')
-
-            # Borders for merged cells
-            for rn in range(s_row, e_row + 1):
-                for cl in ['S', 'T']:
-                    cell = ws[f'{cl}{rn}']
-                    cell.border = thin_border
+                ws[f'T{rn}'].fill = template_fills[20]
+        else:
+            ws[f'S{rn}'].value = 0
+            ws[f'T{rn}'].value = 0
+            ws[f'S{rn}'].font = data_font
+            ws[f'T{rn}'].font = data_font
+            ws[f'S{rn}'].alignment = center
+            ws[f'T{rn}'].alignment = center
+            ws[f'S{rn}'].number_format = '#,##0.00'
+            ws[f'T{rn}'].number_format = '#,##0.00'
 
     # Apply template column fills to ALL data rows (after customs section)
     # ── Summary row (with blank separator before it, like correct bill) ──
@@ -709,7 +610,7 @@ def main():
     # Load
     orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
     print(f"✅ 订单: {len(orders)} 条, 拣货: {len(picks)} 条, 价格: {len(prices)} 条")
-    print(f"📋 报关组: {len(declaration_groups)} 组 (合并报关)" if declaration_groups and any(g for g in declaration_groups) else "")
+    print(f"📋 报关组: 在账单内按 (走货渠道, SO) 判定")
 
     # Compute date range from orders
     date_serials = []
@@ -745,7 +646,7 @@ def main():
     sum_P = sum_O * 0.06
     sum_Q = sum(r['weight'] * r['unit_price'] * 0.35 for r in rows)
     sum_R = sum(r['weight'] * r['unit_price'] * 0.58 for r in rows)
-    customs_count = len(declaration_groups) if declaration_groups and any(g for g in declaration_groups) else len(set(r['service'] for r in rows))
+    customs_count = len({(r['service'], r['so']) for r in rows})
     customs_S = customs_count * 350 / 1.06
     customs_T = customs_S * 0.06
     total = sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T
