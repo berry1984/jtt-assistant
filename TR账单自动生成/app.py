@@ -186,7 +186,7 @@ def generate():
         sum_P = sum_O * 0.06
         sum_Q = sum(safe_float(r.get('weight', 0)) * safe_float(r.get('unit_price', 0)) * 0.35 for r in rows)
         sum_R = sum(safe_float(r.get('weight', 0)) * safe_float(r.get('unit_price', 0)) * 0.58 for r in rows)
-        customs_count = len(declaration_groups) if declaration_groups and any(g for g in declaration_groups) else len(set(r['service'] for r in rows))
+        customs_count = len({(r['service'], r['so']) for r in rows})
         customs_S = customs_count * 350 / 1.06
         customs_T = customs_S * 0.06
         total = round(sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T, 1)
