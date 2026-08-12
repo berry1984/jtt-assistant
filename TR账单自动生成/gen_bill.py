@@ -143,7 +143,7 @@ def build_rows(orders, picks, prices):
         return int(to_num(v, default))
 
     def clean_wh(code):
-        """Clean warehouse code: strip suffixes like -Amazon"""
+        """清理「仓库代码」列：截取第一个 - 之前（兼容 Amazon 等后缀）"""
         return code.split('-')[0] if code else (code or '')
 
     all_rows = []
@@ -152,7 +152,17 @@ def build_rows(orders, picks, prices):
         service = o['服务']
         volumetric_mode = service in VOLUMETRIC_SERVICES
         date_val = o.get('发货日期', o.get('工作日期', ''))
-        wh_code = clean_wh(o.get('仓库代码', '') or o.get('收件人', ''))
+        # 仓库代码匹配：优先「仓库代码」列（截取第一个 - 之前）；
+        # 为空时回退「收件人」——仅当 - 后为 Amazon 才截取 - 前，否则保留完整
+        wh_raw = str(o.get('仓库代码', '') or '').strip()
+        if wh_raw:
+            wh_code = clean_wh(wh_raw)
+        else:
+            recv = str(o.get('收件人', '') or '').strip()
+            if recv and recv.split('-')[-1] == 'Amazon':
+                wh_code = recv.split('-')[0]
+            else:
+                wh_code = recv
         total_weight_order = to_num(o.get('收费重', 0))
         fba_ext = o['扩展单号'].split(',') if o['扩展单号'] else []
         so_picks = pick_groups.get(so, {})
