@@ -8,12 +8,13 @@
 
 规则：
   - J列(计费重) = ROUND(拣货收费重) 并调整最大项使合计匹配订单列表
+  - 特殊服务(美国快递-*包税 等)：单箱 max(材积重,实际重量) 向上取整后按 FBA 合计，不匹配订单收费重
   - S列(报关费) = 350/1.06, 每个唯一走货渠道收取一次（合并显示）
   - 保留完整浮点精度（使用公式）
   - 排序：按渠道分组 → SO → FBA
 """
 
-import sys, re, os, shutil
+import sys, re, os, shutil, math
 from datetime import datetime, timedelta
 from collections import defaultdict, OrderedDict
 from openpyxl import load_workbook
@@ -26,6 +27,14 @@ TEMPLATE = None  # Will look for 账单模板.xlsx next to script or in cwd
 # ── Column mapping ──
 COL = {chr(65+i): i+1 for i in range(26)}  # A=1, B=2, ...
 COL.update({'AA': 27, 'AB': 28, 'AC': 29})
+
+# 特殊计费重服务：按拣货数据 单箱 max(材积重, 实际重量) 向上取整后按 FBA 合计
+VOLUMETRIC_SERVICES = {
+    '美国快递-DHL包税',
+    '美国快递-Fedex包税-HKIP',
+    '美国快递-Fedex包税-HKIE',
+    '美国快递-UPS包税-HK红单',
+}
 
 def find_template():
     """Find template file"""
@@ -141,6 +150,7 @@ def build_rows(orders, picks, prices):
 
     for so, o in sorted(orders.items()):
         service = o['服务']
+        volumetric_mode = service in VOLUMETRIC_SERVICES
         date_val = o.get('发货日期', o.get('工作日期', ''))
         wh_code = clean_wh(o.get('仓库代码', '') or o.get('收件人', ''))
         total_weight_order = to_num(o.get('收费重', 0))
@@ -150,7 +160,17 @@ def build_rows(orders, picks, prices):
         if so_picks:
             fba_rows = []
             for fba, rows in so_picks.items():
-                total_w = sum(to_num(r[8]) for r in rows)
+                if volumetric_mode:
+                    # 特殊服务：单箱取 max(材积重, 实际重量) 向上取整，再按 FBA 合计
+                    total_w = 0.0
+                    for r in rows:
+                        actual_w = to_num(r[6])   # 实际重量
+                        vol_w = to_num(r[7])      # 材积重
+                        if vol_w <= 0:            # 兜底：材积重缺失时按 长×宽×高/6000 现算
+                            vol_w = to_num(r[3]) * to_num(r[4]) * to_num(r[5]) / 6000.0
+                        total_w += math.ceil(max(actual_w, vol_w))
+                else:
+                    total_w = sum(to_num(r[8]) for r in rows)
                 fba_rows.append({
                     'fba': fba,
                     'boxes': len(rows),
@@ -163,17 +183,19 @@ def build_rows(orders, picks, prices):
             for r in fba_rows:
                 r['weight'] = round(to_num(r['weight_raw']))
 
-            rounded_sum = sum(r['weight'] for r in fba_rows)
-            diff = total_weight_order - rounded_sum
+            if not volumetric_mode:
+                # 特殊服务直接用计算结果，不再调整以匹配订单收费重
+                rounded_sum = sum(r['weight'] for r in fba_rows)
+                diff = total_weight_order - rounded_sum
 
-            if diff != 0 and fba_rows:
-                fba_rows_sorted = sorted(enumerate(fba_rows),
-                    key=lambda x: (-x[1]['weight_raw'], x[1]['fba']))
-                remaining, sign = abs(diff), 1 if diff > 0 else -1
-                for idx, item in fba_rows_sorted:
-                    if remaining <= 0: break
-                    item['weight'] += sign * 1
-                    remaining -= 1
+                if diff != 0 and fba_rows:
+                    fba_rows_sorted = sorted(enumerate(fba_rows),
+                        key=lambda x: (-x[1]['weight_raw'], x[1]['fba']))
+                    remaining, sign = abs(diff), 1 if diff > 0 else -1
+                    for idx, item in fba_rows_sorted:
+                        if remaining <= 0: break
+                        item['weight'] += sign * 1
+                        remaining -= 1
 
             for r in fba_rows:
                 p = lookup_price(prices, wh_code)
