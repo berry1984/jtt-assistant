@@ -9,9 +9,9 @@
 规则：
   - J列(计费重) = ROUND(拣货收费重) 并调整最大项使合计匹配订单列表
   - 特殊服务(美国快递-*包税 等)：单箱 max(材积重,实际重量) 向上取整后按 FBA 合计，不匹配订单收费重
-  - S列(报关费) = 350/1.06, 按账单内 (走货渠道, SO) 分报关组，组内第一行显示金额，不合并
+  - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - 保留完整浮点精度（使用公式）
-  - 排序：按渠道分组 → SO → FBA
+  - 排序：按渠道分组 → 有FBA标识的SO在前 → SO → FBA
 """
 
 import sys, re, os, shutil, math
@@ -209,8 +209,9 @@ def build_rows(orders, picks, prices):
     return all_rows
 
 def sort_rows(rows, declaration_groups=None):
-    """Sort rows: by channel group, then SO, then FBA"""
-    # Determine channel group order
+    """Sort rows: by channel group; within a channel, SOs containing FBA标识 come first,
+    then SOs without; each group ordered by SO then FBA"""
+    # Determine channel group order (走货渠道 appearance order)
     seen = []
     for r in rows:
         ch = r['service']
@@ -219,7 +220,8 @@ def sort_rows(rows, declaration_groups=None):
 
     def sort_key(r):
         ch_idx = seen.index(r['service']) if r['service'] in seen else 999
-        return (ch_idx, r['so'], r['fba'])
+        has_fba = 0 if 'FBA' in str(r['so']) else 1  # 有FBA标识靠前
+        return (ch_idx, has_fba, r['so'], r['fba'])
 
     return sorted(rows, key=sort_key)
 
@@ -371,45 +373,27 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         # A column border
         ws[f'A{row_num}'].border = thin_border
     
-    # ── Customs fee: group by (走货渠道, SO) ──
-    # 新规则：不读取应收价格表，直接按账单内每行「走货渠道 + SO」两列判定报关组。
-    # 走货渠道与 SO 均相同的行 = 一个报关组（行序已按 渠道→SO→FBA 排序，同组行必然相邻）；
-    # 组内第一行写 报关费(S)=350/1.06 与 报关税费(T)=S*0.06，其余行 S/T 置 0，
-    # 不做单元格合并。
-    prev_key = None
+    # ── Customs fee: fill every data row ──
+    # 规则：不再区分报关组，报关费(S)=350/1.06 与 报关税费(T)=S*0.06 直接填写到每一行。
     for i, r in enumerate(rows):
         rn = 4 + i
-        key = (r['service'], r['so'])
-        first_of_group = (key != prev_key)
-        prev_key = key
-
         for cl in ['S', 'T']:
             cell = ws[f'{cl}{rn}']
             cell.border = thin_border
 
-        if first_of_group:
-            ws[f'S{rn}'].value = '=350/1.06'
-            ws[f'S{rn}'].font = data_font
-            ws[f'S{rn}'].alignment = center
-            ws[f'S{rn}'].number_format = '#,##0.00'
-            if 19 in template_fills:
-                ws[f'S{rn}'].fill = template_fills[19]
+        ws[f'S{rn}'].value = '=350/1.06'
+        ws[f'S{rn}'].font = data_font
+        ws[f'S{rn}'].alignment = center
+        ws[f'S{rn}'].number_format = '#,##0.00'
+        if 19 in template_fills:
+            ws[f'S{rn}'].fill = template_fills[19]
 
-            ws[f'T{rn}'].value = f'=S{rn}*0.06'
-            ws[f'T{rn}'].font = data_font
-            ws[f'T{rn}'].alignment = center
-            ws[f'T{rn}'].number_format = '#,##0.00'
-            if 20 in template_fills:
-                ws[f'T{rn}'].fill = template_fills[20]
-        else:
-            ws[f'S{rn}'].value = 0
-            ws[f'T{rn}'].value = 0
-            ws[f'S{rn}'].font = data_font
-            ws[f'T{rn}'].font = data_font
-            ws[f'S{rn}'].alignment = center
-            ws[f'T{rn}'].alignment = center
-            ws[f'S{rn}'].number_format = '#,##0.00'
-            ws[f'T{rn}'].number_format = '#,##0.00'
+        ws[f'T{rn}'].value = f'=S{rn}*0.06'
+        ws[f'T{rn}'].font = data_font
+        ws[f'T{rn}'].alignment = center
+        ws[f'T{rn}'].number_format = '#,##0.00'
+        if 20 in template_fills:
+            ws[f'T{rn}'].fill = template_fills[20]
 
     # Apply template column fills to ALL data rows (after customs section)
     # ── Summary row (with blank separator before it, like correct bill) ──
@@ -646,7 +630,7 @@ def main():
     sum_P = sum_O * 0.06
     sum_Q = sum(r['weight'] * r['unit_price'] * 0.35 for r in rows)
     sum_R = sum(r['weight'] * r['unit_price'] * 0.58 for r in rows)
-    customs_count = len({(r['service'], r['so']) for r in rows})
+    customs_count = len(rows)  # 报关费按每一行收取
     customs_S = customs_count * 350 / 1.06
     customs_T = customs_S * 0.06
     total = sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T
