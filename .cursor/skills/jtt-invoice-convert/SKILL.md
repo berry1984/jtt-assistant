@@ -23,7 +23,7 @@ Web: `POST /invoice_convert` with `invoice_file`, `target`.
 
 - **天图**：B3-B13 收件人直填原值；产品总价 = 单价×数量；B1 服务留空
 - **航乐**：输出名 `{客户名} {订单号} {欧洲|英国}发票.xlsx`
-- **美琦**：收件人信息按地址库编码从 `亚马逊仓库代码` sheet 查表；海关编码格式 `XXXX.XX.XXXX`；报关方式含「退税」→ 一般贸易；渠道未映射时追加到 `服务渠道` 下拉
+- **美琦**：收件人信息按地址库编码从 `亚马逊仓库代码` sheet 查表；**海关编码保持源原值（不加小数点）**；报关方式含「退税」→ 一般贸易；渠道未映射时追加到 `服务渠道` 下拉；数据列 A-R，O=产品图片（源图嵌入）、P=PO Number（源 V 列）、Q=物品箱号（单行总箱数）、R=物品FBA ID（货箱编号 `U00000` 前 12 位）
 
 ## 产品图片（2026-06 修复）
 
@@ -41,7 +41,7 @@ Web: `POST /invoice_convert` with `invoice_file`, `target`.
 - 标准 Excel 嵌入图（openpyxl `_images`）
 - WPS `cellimages.xml` + DISPIMG 公式（`_extract_wps_cell_images`）
 
-**天图** → M 列；**航乐** → W 列。行高设为 80 以容纳图片。
+**天图** → M 列；**航乐** → W 列；**美琦** → O 列（同时保留模板表头图 Row≤17）。行高设为 80 以容纳图片。
 
 Web 版 `app.py` 仍提取图片到 `/temp_images/`，但 CLI/本地转换以 twoCellAnchor 嵌入为准，打开 xlsx 即可见图。
 

@@ -993,6 +993,20 @@ def _format_hs_code(val):
     return s
 
 
+def _extract_fba_id(box_no):
+    """从货箱编号提取物品 FBA ID：'U00000' 之前的 12 个字符。
+
+    如 'FBA19CW3W9W7U000001-3' → 'FBA19CW3W9W7'；未找到返回空串。
+    """
+    if not box_no:
+        return ''
+    s = str(box_no).strip()
+    idx = s.find('U00000')
+    if idx >= 12:
+        return s[idx - 12:idx]
+    return ''
+
+
 # ═══════════════════════════════════════════════════════════════
 #  3.5 美琦 美线 转换
 # ═══════════════════════════════════════════════════════════════
@@ -1003,9 +1017,11 @@ def convert_to_meiqi(tr, output_path):
 
     新版美琦模版（美琦美线发票模版.xlsx）：
       - 头部 Row 1-17：A 列=标签，B 列=值
-      - 数据列头 Row 18：A-N（货箱编号/品名英/品名中/数量/单价/重量/长宽高/
-        海关编码/品牌/材质/型号/用途），数据行从 Row 19 起
+      - 数据列头 Row 18：A-R（货箱编号/品名英/品名中/数量/单价/重量/长宽高/
+        海关编码/品牌/材质/型号/用途/产品图片/PO Number/物品箱号/物品FBA ID），
+        数据行从 Row 19 起
     收件人信息从「亚马逊仓库代码」sheet 按地址库编码查表。
+    产品图片参考天图从源发票提取并嵌入 O 列。
     """
     if not os.path.exists(MEIQI_TEMPLATE):
         print(f'❌ 美琦模板不存在: {MEIQI_TEMPLATE}')
@@ -1117,15 +1133,35 @@ def convert_to_meiqi(tr, output_path):
     #  数据行 Row 19+
     # ══════════════════════════════════════════════
 
-    # 清空模版自带示例数据 (Row 19-202, A-N)
+    # 收集模板表头自带的图片（Row<=17，如左上角品牌图），嵌入时一并保留。
+    # 注：img._data() 会关闭 BytesIO ref，且 openpyxl 保存时会再次序列化同一图片，
+    # 故收集后清空 ws._images，统一由 _embed_images_as_cell_images 后处理写入。
+    pending_images = {}
+    for img in list(ws._images):
+        try:
+            a = img.anchor
+            if hasattr(a, '_from') and a._from.row + 1 <= 17:
+                col_letter = get_column_letter(a._from.col + 1)
+                img_row_1 = a._from.row + 1
+                img_data = img._data()
+                if isinstance(img_data, bytes):
+                    pending_images[f'{col_letter}{img_row_1}'] = img_data
+                elif isinstance(img_data, BytesIO):
+                    pending_images[f'{col_letter}{img_row_1}'] = img_data.getvalue()
+        except Exception:
+            pass
+    ws._images = []
+
+    # 清空模版自带示例数据 (Row 19-202, A-R)
     for r in range(19, 203):
-        for c in range(1, 15):
+        for c in range(1, 19):
             ws.cell(row=r, column=c).value = None
 
     data_start = 19
     box_cursor = 1  # 运行式箱号区间起点
     for i, dr in enumerate(tr.data_rows):
         r = data_start + i
+        ws.row_dimensions[r].height = 80  # 产品图片列 O 需要足够高度
 
         # 每行箱数 → 货箱编号区间（如 1-3、4-6）
         box_cnt = _parse_box_count(dr['A'])
@@ -1142,17 +1178,38 @@ def convert_to_meiqi(tr, output_path):
         ws.cell(row=r, column=7).value = dr['C'] if dr['C'] is not None else ''   # G: 货箱长度
         ws.cell(row=r, column=8).value = dr['D'] if dr['D'] is not None else ''   # H: 货箱宽度
         ws.cell(row=r, column=9).value = dr['E'] if dr['E'] is not None else ''   # I: 货箱高度
-        ws.cell(row=r, column=10).value = _format_hs_code(dr['K'])                # J: 海关编码
+        ws.cell(row=r, column=10).value = dr['K'] if dr['K'] is not None else ''  # J: 海关编码（源原值，不改变格式/不加小数点）
         ws.cell(row=r, column=11).value = dr['M'] if dr['M'] is not None else ''  # K: 品牌
         ws.cell(row=r, column=12).value = dr['J'] if dr['J'] is not None else ''  # L: 材质
         ws.cell(row=r, column=13).value = dr['N'] if dr['N'] is not None else ''  # M: 型号
         ws.cell(row=r, column=14).value = dr['L'] if dr['L'] is not None else ''  # N: 用途
 
+        # O: 产品图片（从源发票提取嵌入，参考天图方案）
+        src_row = dr.get('_row')
+        img_bytes = tr.images.get(src_row) if src_row else None
+        if img_bytes:
+            pending_images[f'O{r}'] = img_bytes
+            ws.cell(row=r, column=15).value = '[图片]'
+
+        # P: PO Number（源 V 列，优先行级，其次头部）
+        po = dr.get('V') or tr.get('PO Number', '') or ''
+        ws.cell(row=r, column=16).value = po
+
+        # Q: 物品箱号 = 单行总箱数
+        ws.cell(row=r, column=17).value = box_cnt
+
+        # R: 物品FBA ID = 货箱编号中 U00000 前 12 位
+        ws.cell(row=r, column=18).value = _extract_fba_id(dr['A'])
+
     num_data = len(tr.data_rows)
     wb.save(output_path)
 
+    # 后处理：嵌入产品图片（+保留模板表头图片），参考天图 twoCellAnchor 方案
+    if pending_images:
+        _embed_images_as_cell_images(output_path, pending_images, None)
+
     print(f'✅ 美琦美线发票已生成: {os.path.basename(output_path)}')
-    print(f'   数据: {num_data} 行, 箱数: {box_count_total}')
+    print(f'   数据: {num_data} 行, 箱数: {box_count_total}, 图片: {len(pending_images)}')
     return True
 
 
