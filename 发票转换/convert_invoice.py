@@ -1011,7 +1011,55 @@ def _extract_fba_id(box_no):
 #  3.5 美琦 美线 转换
 # ═══════════════════════════════════════════════════════════════
 
-def convert_to_meiqi(tr, output_path):
+
+def _load_order_list_map(order_list_path):
+    """从订单列表 excel 构建 {地址库编码: 运单号} 映射。
+
+    自动定位表头行：优先找含「运单号」的表头行；地址库编码列优先
+    「地址库编码」，其次「仓库代码」/「仓库」。同一编码取第一行。
+    """
+    wb = load_workbook(order_list_path, data_only=True)
+    ws = wb.worksheets[0]
+
+    def find_col(header_vals, keywords):
+        for idx, v in enumerate(header_vals):
+            for kw in keywords:
+                if kw in v:
+                    return idx + 1  # 1-based 列号
+        return None
+
+    # 定位表头行（含「运单号」的行；找不到则取第 1 行）
+    header_row = 1
+    for r in range(1, min(ws.max_row, 20) + 1):
+        row_vals = [str(ws.cell(row=r, column=c).value or '').strip()
+                    for c in range(1, min(ws.max_column, 60) + 1)]
+        if any('运单号' in v for v in row_vals):
+            header_row = r
+            break
+
+    header_vals = [str(ws.cell(row=header_row, column=c).value or '').strip()
+                   for c in range(1, min(ws.max_column, 60) + 1)]
+    waybill_col = find_col(header_vals, ['运单号'])
+    code_col = find_col(header_vals, ['地址库编码', '仓库代码', '仓库'])
+    if not waybill_col or not code_col:
+        print(f'   ⚠️ 订单列表未找到「运单号」或「地址库编码」列: {os.path.basename(order_list_path)}')
+        return {}
+
+    mapping = {}
+    for r in range(header_row + 1, ws.max_row + 1):
+        code = ws.cell(row=r, column=code_col).value
+        waybill = ws.cell(row=r, column=waybill_col).value
+        if code is None or waybill is None:
+            continue
+        code_s = str(code).strip()
+        waybill_s = str(waybill).strip()
+        if code_s and waybill_s and code_s not in mapping:
+            mapping[code_s] = waybill_s
+    print(f'   📋 订单列表: {os.path.basename(order_list_path)}，地址库编码 {len(mapping)} 条')
+    return mapping
+
+
+def convert_to_meiqi(tr, output_path, order_list_path=None):
     """
     TR发票 → 美琦美线发票格式
 
@@ -1022,6 +1070,7 @@ def convert_to_meiqi(tr, output_path):
         数据行从 Row 19 起
     收件人信息从「亚马逊仓库代码」sheet 按地址库编码查表。
     产品图片参考天图从源发票提取并嵌入 O 列。
+    若提供 order_list_path（订单列表 excel），按地址库编码查运单号填入 B1 客户订单号。
     """
     if not os.path.exists(MEIQI_TEMPLATE):
         print(f'❌ 美琦模板不存在: {MEIQI_TEMPLATE}')
@@ -1058,9 +1107,20 @@ def convert_to_meiqi(tr, output_path):
     #  头部 Row 1-17
     # ══════════════════════════════════════════════
 
-    # B1: 客户订单号 = 源客户订单号
+    # 有效地址库编码 = 源地址库编码 或 收件人姓名（仓库代码，如 IND9）
+    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+
+    # B1: 客户订单号 = 源客户订单号；若提供订单列表，按地址库编码查运单号填入
     order_no = tr.get('客户订单号', '') or ''
-    set_val(1, order_no)
+    b1_val = order_no
+    if order_list_path:
+        ol_map = _load_order_list_map(order_list_path)
+        if wh_code and wh_code in ol_map:
+            b1_val = ol_map[wh_code]
+            print(f'   📋 订单列表命中: {wh_code} → 运单号 {b1_val}')
+        elif wh_code:
+            print(f'   ⚠️ 订单列表未找到地址库编码 {wh_code}，客户订单号保留源值')
+    set_val(1, b1_val)
 
     # B2: 客户参考号 = 源客户参考号（无则取客户订单号）
     set_val(2, tr.get('客户参考号', '') or order_no)
@@ -1084,8 +1144,7 @@ def convert_to_meiqi(tr, output_path):
                     ws_svc.cell(row=r, column=2).value = meiqi_service
                     break
 
-    # B4: 地址库编码 = 源地址库编码 或 收件人姓名（仓库代码，如 IND9）
-    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+    # B4: 地址库编码
     set_val(4, wh_code)
 
     # B5-B10: 收件人信息 = 亚马逊仓库代码查表；查不到回退源字段

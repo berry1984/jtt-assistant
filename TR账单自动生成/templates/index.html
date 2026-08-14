@@ -280,6 +280,17 @@
         <div class="format-desc" id="formatDesc"></div>
       </div>
 
+      <div class="form-group" id="orderListGroup" style="display:none;">
+        <label>美琦：订单列表 Excel <small>(.xlsx，可选，按地址库编码回填客户订单号为运单号)</small></label>
+        <div class="file-input-wrapper" id="iw2">
+          <input type="file" name="order_list" accept=".xlsx"
+                 onchange="updateLabel(this, 'iw2')">
+          <div class="icon">📋</div>
+          <div class="hint">上传订单列表（含「地址库编码」与「运单号」列）</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+
       <button type="submit" class="btn btn-primary" id="invoiceBtn">开始转换</button>
     </form>
   </div>
@@ -444,6 +455,9 @@ const DESCS = {
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
   document.getElementById('formatDesc').textContent = DESCS[sel.value] || '';
+  // 仅「美琦」显示订单列表上传区（按地址库编码回填客户订单号）
+  const og = document.getElementById('orderListGroup');
+  if (og) og.style.display = (sel.value === '美琦') ? '' : 'none';
 }
 updateDesc();
 

@@ -232,6 +232,7 @@ def serve_temp_image(session_id, filename):
 @app.route('/invoice_convert', methods=['POST'])
 def invoice_convert():
     invoice_file = request.files.get('invoice_file')
+    order_list_file = request.files.get('order_list')
     target = request.form.get('target', '天图')
 
     if not invoice_file or invoice_file.filename == '':
@@ -295,7 +296,11 @@ def invoice_convert():
         elif target == '航乐-eu':
             ok = convert_to_hangle(tr, output_path, region='eu', image_url_base=image_url_base)
         elif target == '美琦':
-            ok = convert_to_meiqi(tr, output_path)
+            order_list_path = None
+            if order_list_file and order_list_file.filename:
+                order_list_path = os.path.join(tmp_dir, 'order_list.xlsx')
+                order_list_file.save(order_list_path)
+            ok = convert_to_meiqi(tr, output_path, order_list_path=order_list_path)
 
         if not ok:
             flash('转换失败，请检查源文件格式')
