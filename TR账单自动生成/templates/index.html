@@ -139,7 +139,7 @@
   <button class="tab-btn {% if active_tab == 'invoice' %}active{% endif %}"
           onclick="switchTab('invoice')">
     📄 发票转换
-    <span class="badge">TR→天图/航乐</span>
+    <span class="badge">TR→天图/航乐/美琦</span>
   </button>
   <button class="tab-btn {% if active_tab == 'picking' %}active{% endif %}"
           onclick="switchTab('picking')">
@@ -439,6 +439,7 @@ const DESCS = {
   '天图': '📋 天图下单发票模板：仓代码下拉、带电/带磁、报关方式、数据验证。输出 .xlsx。',
   '航乐-uk': '🇬🇧 航乐英国发票（GBP）：地址/VAT/渠道/包税/物品属性。输出 .xlsx。',
   '航乐-eu': '🇪🇺 航乐欧洲发票（EUR）：结构与英国版一致，货币为欧元。输出 .xlsx。',
+  '美琦': '🇺🇸 美琦美线发票：收件人信息按地址库编码自动查表填充，报关方式/海关编码自动归一化。输出 .xlsx。',
 };
 function updateDesc() {
   const sel = document.getElementById('formatSelect');

@@ -6,6 +6,7 @@
   - 天图
   - 航乐-UK
   - 航乐-EU
+  - 美琦美线
 
 用法:
   python3 app.py [端口号]
@@ -21,7 +22,7 @@ from flask import Flask, request, render_template, send_file, flash, redirect
 
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
+from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle, convert_to_meiqi
 
 app = Flask(__name__)
 app.secret_key = 'invoice-converter-secret'
@@ -47,6 +48,7 @@ TARGET_OPTIONS = {
     '天图': '天图下单发票',
     '航乐-uk': '航乐-英国发票',
     '航乐-eu': '航乐-欧洲发票',
+    '美琦': '美琦美线发票',
 }
 
 
@@ -80,7 +82,7 @@ def convert():
 
         # 生成输出文件名
         base_name = os.path.splitext(invoice_file.filename)[0]
-        ext_map = {'天图': '天图', '航乐-uk': '航乐-UK', '航乐-eu': '航乐-EU'}
+        ext_map = {'天图': '天图', '航乐-uk': '航乐-UK', '航乐-eu': '航乐-EU', '美琦': '美琦'}
         output_name = f'{base_name}-{ext_map[target]}.xlsx'
         output_path = os.path.join(tmp_dir, output_name)
 
@@ -91,6 +93,8 @@ def convert():
             ok = convert_to_hangle(tr, output_path, region='uk')
         elif target == '航乐-eu':
             ok = convert_to_hangle(tr, output_path, region='eu')
+        elif target == '美琦':
+            ok = convert_to_meiqi(tr, output_path)
 
         if not ok:
             flash('转换失败，请检查源文件格式')
@@ -121,7 +125,7 @@ def convert():
 if __name__ == '__main__':
     print('🚀 发票转换 Web 服务已启动')
     print('📍 http://localhost:5000')
-    print('📂 模板: 天图 | 航乐-UK | 航乐-EU')
+    print('📂 模板: 天图 | 航乐-UK | 航乐-EU | 美琦')
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5001
     print(f'🌐 访问地址: http://localhost:{port}')
     app.run(host='0.0.0.0', port=port, debug=True)

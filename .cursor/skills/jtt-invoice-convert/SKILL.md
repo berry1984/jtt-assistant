@@ -1,35 +1,56 @@
 ---
 name: jtt-invoice-convert
-description: Converts TR/思锐/赛诺吉 invoices to 天图 or 航乐 supplier templates. Use when working on 发票转换, convert_invoice.py, TR→天图, 航乐发票, or Page1 sheet mapping.
+description: Converts TR/思锐/赛诺吉 invoices to 天图, 航乐, or 美琦 supplier templates. Use when working on 发票转换, convert_invoice.py, TR→天图, 航乐发票, 美琦发票, 产品图片不显示, twoCellAnchor, or Page1 sheet mapping.
 ---
 
-# 发票转换 TR→天图/航乐
+# 发票转换 TR→天图/航乐/美琦
 
 ## Quick Start
 
 ```bash
 cd 发票转换
-python3 convert_invoice.py <源发票.xlsx> <输出.xlsx> [--target 天图|航乐-uk|航乐-eu]
+python3 convert_invoice.py <源发票.xlsx> <输出.xlsx> [--target 天图|航乐-uk|航乐-eu|美琦]
 ```
 
 Web: `POST /invoice_convert` with `invoice_file`, `target`.
 
 ## Source Format
 
-- Sheet `Page1`, Row 1-16 header, Row 18+ data
+- Sheet `Page1`，Row 1-16 header，Row 18+ 数据行
 - 含货箱编号、品名、申报单价/数量、重量尺寸、产品图片
 
 ## Conversion Rules
 
 - **天图**：B3-B13 收件人直填原值；产品总价 = 单价×数量；B1 服务留空
 - **航乐**：输出名 `{客户名} {订单号} {欧洲|英国}发票.xlsx`
-- 图片提取为 PNG；Web 版用 IMAGE() 引用 HTTP URL
+- **美琦**：收件人信息按地址库编码从 `亚马逊仓库代码` sheet 查表；海关编码格式 `XXXX.XX.XXXX`；报关方式含「退税」→ 一般贸易；渠道未映射时追加到 `服务渠道` 下拉
+
+## 产品图片（2026-06 修复）
+
+**问题**：转换后图片不显示 / 尺寸过大。
+
+**方案**：`_embed_images_as_cell_images()` 写入标准 Excel 绘图，不用 IMAGE() 公式为主：
+
+| 组件 | 说明 |
+|------|------|
+| `xl/media/image_N.png` | 图片二进制 |
+| `xl/drawings/drawing1.xml` | **twoCellAnchor**，图片跟随单元格大小 |
+| worksheet `<drawing>` | 关联 drawing rels |
+
+**源图提取**（`TRInvoice`）：
+- 标准 Excel 嵌入图（openpyxl `_images`）
+- WPS `cellimages.xml` + DISPIMG 公式（`_extract_wps_cell_images`）
+
+**天图** → M 列；**航乐** → W 列。行高设为 80 以容纳图片。
+
+Web 版 `app.py` 仍提取图片到 `/temp_images/`，但 CLI/本地转换以 twoCellAnchor 嵌入为准，打开 xlsx 即可见图。
 
 ## Key Files
 
 | 文件 | 用途 |
 |------|------|
-| `发票转换/convert_invoice.py` | 转换引擎 |
+| `发票转换/convert_invoice.py` | 转换引擎 + `_embed_images_as_cell_images` |
+| `发票转换/check_format.py` | 验证 drawing/media 是否写入 |
 | `TR转天图发票_转换规则说明.md` | 完整字段映射 |
 
 ## Additional Resources

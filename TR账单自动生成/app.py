@@ -29,7 +29,7 @@ sys.path.insert(0, THIS_DIR)
 sys.path.insert(0, INVOICE_DIR)
 
 from gen_bill import load_data, build_rows, sort_rows, generate_bill
-from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle
+from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle, convert_to_meiqi
 
 # ── 提单及电放保函生成模块 ──
 from gen_bl_docs import generate_bl_docs
@@ -76,6 +76,7 @@ TARGET_OPTIONS = {
     '天图': '天图下单发票',
     '航乐-uk': '航乐-英国发票',
     '航乐-eu': '航乐-欧洲发票',
+    '美琦': '美琦美线发票',
 }
 
 
@@ -248,24 +249,24 @@ def invoice_convert():
 
         tr = TRInvoice(invoice_path)
 
-        # ── 提取图片到临时目录（供 IMAGE() 公式以 HTTP URL 引用） ──
-        image_session_id = uuid.uuid4().hex[:12]
-        session_img_dir = os.path.join(TEMP_IMAGE_DIR, image_session_id)
-        os.makedirs(session_img_dir, exist_ok=True)
+        # ── 提取图片到临时目录（供 IMAGE() 公式以 HTTP URL 引用；美琦新版无图片列，跳过） ──
+        image_url_base = None
+        if target != '美琦':
+            image_session_id = uuid.uuid4().hex[:12]
+            session_img_dir = os.path.join(TEMP_IMAGE_DIR, image_session_id)
+            os.makedirs(session_img_dir, exist_ok=True)
 
-        img_count = 0
-        for src_row, img_bytes in tr.images.items():
-            img_filename = f'image_tiantu_{img_count + 1}.png'
-            with open(os.path.join(session_img_dir, img_filename), 'wb') as f:
-                f.write(img_bytes)
-            img_count += 1
+            img_count = 0
+            for src_row, img_bytes in tr.images.items():
+                img_filename = f'image_tiantu_{img_count + 1}.png'
+                with open(os.path.join(session_img_dir, img_filename), 'wb') as f:
+                    f.write(img_bytes)
+                img_count += 1
 
-        if img_count > 0:
-            # 构建服务器 URL 前缀
-            host_url = request.host_url.rstrip('/')
-            image_url_base = f'{host_url}/temp_images/{image_session_id}'
-        else:
-            image_url_base = None
+            if img_count > 0:
+                # 构建服务器 URL 前缀
+                host_url = request.host_url.rstrip('/')
+                image_url_base = f'{host_url}/temp_images/{image_session_id}'
 
         base_name = os.path.splitext(invoice_file.filename)[0]
 
@@ -282,7 +283,8 @@ def invoice_convert():
             if output_name.startswith(' '):
                 output_name = output_name.lstrip()
         else:
-            output_name = f'{base_name}-天图.xlsx'
+            ext_map = {'天图': '天图', '美琦': '美琦'}
+            output_name = f"{base_name}-{ext_map.get(target, '天图')}.xlsx"
 
         output_path = os.path.join(tmp_dir, output_name)
 
@@ -292,6 +294,8 @@ def invoice_convert():
             ok = convert_to_hangle(tr, output_path, region='uk', image_url_base=image_url_base)
         elif target == '航乐-eu':
             ok = convert_to_hangle(tr, output_path, region='eu', image_url_base=image_url_base)
+        elif target == '美琦':
+            ok = convert_to_meiqi(tr, output_path)
 
         if not ok:
             flash('转换失败，请检查源文件格式')

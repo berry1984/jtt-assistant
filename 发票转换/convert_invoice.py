@@ -6,11 +6,13 @@ TR发票 → 供应商发票 转换工具
   1. 天图 (--to 天图)
   2. 航乐英国 (--to 航乐-uk)
   3. 航乐欧洲 (--to 航乐-eu)
+  4. 美琦美线 (--to 美琦)
 
 用法：
   python3 convert_invoice.py <TR发票.xlsx> --to 天图 [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 航乐-uk [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 航乐-eu [输出路径]
+  python3 convert_invoice.py <TR发票.xlsx> --to 美琦 [输出路径]
 
 源文件兼容：
   - TR系统下单发票  ✅
@@ -50,6 +52,13 @@ HANGLE_UK_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 
 HANGLE_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xls')
 HANGLE_UK_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 英国发票模板9.9更新.xlsx')
 HANGLE_EU_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xlsx')
+MEIQI_TEMPLATE = os.path.join(SCRIPT_DIR, '美琦美线发票模版.xlsx')
+
+# 美琦渠道映射：JTT/客户渠道名称 → 美琦服务渠道名称（服务渠道 sheet B 列下拉清单）
+# 未命中映射的渠道保留源名称，并自动追加到下拉清单。
+MEIQI_CHANNEL_MAP = {
+    # '美国超快线-卡派': 'Match15-卡派',   # 按需补充已知对应关系
+}
 
 # TR发票列映射 (Row 17+ header)
 TR_COL = {
@@ -962,6 +971,191 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     return True
 
 
+def _parse_box_count(box_no):
+    """解析箱号尾部的箱数（如 'FBA19CW3W9W7U000001-3' → 3）"""
+    if not box_no:
+        return 1
+    m = re.search(r'-(\d+)$', str(box_no))
+    return int(m.group(1)) if m else 1
+
+
+def _format_hs_code(val):
+    """海关编码格式化为 XXXX.XX.XXXX（美琦模版示例格式）。
+
+    如 9405429000 → 9405.42.9000；非 10 位数字原样返回。
+    """
+    if val is None:
+        return ''
+    s = str(val).strip()
+    digits = re.sub(r'\D', '', s)
+    if len(digits) == 10:
+        return f'{digits[0:4]}.{digits[4:6]}.{digits[6:10]}'
+    return s
+
+
+# ═══════════════════════════════════════════════════════════════
+#  3.5 美琦 美线 转换
+# ═══════════════════════════════════════════════════════════════
+
+def convert_to_meiqi(tr, output_path):
+    """
+    TR发票 → 美琦美线发票格式
+
+    新版美琦模版（美琦美线发票模版.xlsx）：
+      - 头部 Row 1-17：A 列=标签，B 列=值
+      - 数据列头 Row 18：A-N（货箱编号/品名英/品名中/数量/单价/重量/长宽高/
+        海关编码/品牌/材质/型号/用途），数据行从 Row 19 起
+    收件人信息从「亚马逊仓库代码」sheet 按地址库编码查表。
+    """
+    if not os.path.exists(MEIQI_TEMPLATE):
+        print(f'❌ 美琦模板不存在: {MEIQI_TEMPLATE}')
+        return False
+
+    print(f'📄 美琦模板: {MEIQI_TEMPLATE}')
+
+    # ── 复制模板 ──
+    shutil.copy(MEIQI_TEMPLATE, output_path)
+    wb = load_workbook(output_path)
+    ws = wb['发票']
+
+    # ── 构建 亚马逊仓库代码 查表: {地址编码: {...}} ──
+    address_lib = {}
+    ws_addr = wb['亚马逊仓库代码']
+    for r in range(2, ws_addr.max_row + 1):
+        code = ws_addr.cell(row=r, column=1).value
+        if not code or not str(code).strip():
+            continue
+        address_lib[str(code).strip()] = {
+            '联系人': ws_addr.cell(row=r, column=3).value,   # C: 收件人姓名
+            '公司名': ws_addr.cell(row=r, column=4).value,   # D: 公司名
+            '地址一': ws_addr.cell(row=r, column=5).value,   # E: 地址一
+            '城市': ws_addr.cell(row=r, column=6).value,     # F: 城市
+            '省洲': ws_addr.cell(row=r, column=7).value,     # G: 省/洲
+            '国家': ws_addr.cell(row=r, column=8).value,     # H: 国家
+            '邮编': ws_addr.cell(row=r, column=9).value,     # I: 邮编
+        }
+
+    def set_val(row, val):
+        ws[f'B{row}'] = val if val is not None else ''
+
+    # ══════════════════════════════════════════════
+    #  头部 Row 1-17
+    # ══════════════════════════════════════════════
+
+    # B1: 客户订单号 = 源客户订单号
+    order_no = tr.get('客户订单号', '') or ''
+    set_val(1, order_no)
+
+    # B2: 客户参考号 = 源客户参考号（无则取客户订单号）
+    set_val(2, tr.get('客户参考号', '') or order_no)
+
+    # B3: 服务（渠道映射；未命中保留源名称）
+    service = tr.get('服务', '') or ''
+    meiqi_service = MEIQI_CHANNEL_MAP.get(service, service)
+    set_val(3, meiqi_service)
+
+    # 若渠道不在「服务渠道」下拉清单，追加到 B 列（B2:B132 范围内），保证下拉有效
+    if meiqi_service:
+        ws_svc = wb['服务渠道']
+        found = False
+        for r in range(2, 133):
+            if (ws_svc.cell(row=r, column=2).value or '') == meiqi_service:
+                found = True
+                break
+        if not found:
+            for r in range(2, 133):
+                if ws_svc.cell(row=r, column=2).value is None:
+                    ws_svc.cell(row=r, column=2).value = meiqi_service
+                    break
+
+    # B4: 地址库编码 = 源地址库编码 或 收件人姓名（仓库代码，如 IND9）
+    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+    set_val(4, wh_code)
+
+    # B5-B10: 收件人信息 = 亚马逊仓库代码查表；查不到回退源字段
+    if wh_code and wh_code in address_lib:
+        lib = address_lib[wh_code]
+        set_val(5, lib['联系人'])        # 收件人姓名
+        set_val(6, lib['地址一'])        # 收件人地址一
+        set_val(7, lib['城市'])          # 收件人城市
+        set_val(8, lib['省洲'])          # 收件人省/洲
+        set_val(9, lib['邮编'])          # 收件人邮编
+        set_val(10, lib['国家'])         # 收件人国家代码
+    else:
+        set_val(5, tr.get('收件人姓名', ''))
+        set_val(6, tr.get('收件人地址一', ''))
+        set_val(7, tr.get('收件人城市', ''))
+        set_val(8, tr.get('收件人省份/州', ''))
+        set_val(9, tr.get('收件人邮编', ''))
+        set_val(10, tr.get('收件人国家代码(二字代码)', '')
+                 or tr.get('收件人国家代码', '') or 'US')
+
+    # B11-B13: 收件人电话/邮箱/公司名称 → 留空（与美琦完成示例一致）
+    set_val(11, '')
+    set_val(12, '')
+    set_val(13, '')
+
+    # B14/B15: 带电/带磁（是/否）
+    set_val(14, '是' if tr.get('带电', '否') == '是' else '否')
+    set_val(15, '是' if tr.get('带磁', '否') == '是' else '否')
+
+    # B16: 报关方式（美线规则归一化：退税报关→一般贸易，代理报关→代理报关）
+    customs = tr.get('报关方式', '') or ''
+    if '退税' in customs:
+        customs = '一般贸易'
+    elif '代理' in customs:
+        customs = '代理报关'
+    set_val(16, customs)
+
+    # B17: 箱数 = 源箱数；为空则按数据行箱数合计
+    box_count_total = sum(_parse_box_count(dr['A']) for dr in tr.data_rows)
+    src_boxes = tr.get('箱数', '')
+    set_val(17, src_boxes if src_boxes is not None and str(src_boxes).strip() != ''
+            else box_count_total)
+
+    # ══════════════════════════════════════════════
+    #  数据行 Row 19+
+    # ══════════════════════════════════════════════
+
+    # 清空模版自带示例数据 (Row 19-202, A-N)
+    for r in range(19, 203):
+        for c in range(1, 15):
+            ws.cell(row=r, column=c).value = None
+
+    data_start = 19
+    box_cursor = 1  # 运行式箱号区间起点
+    for i, dr in enumerate(tr.data_rows):
+        r = data_start + i
+
+        # 每行箱数 → 货箱编号区间（如 1-3、4-6）
+        box_cnt = _parse_box_count(dr['A'])
+        box_start = box_cursor
+        box_end = box_cursor + box_cnt - 1
+        box_cursor += box_cnt
+        ws.cell(row=r, column=1).value = f'{box_start}-{box_end}'   # A: 货箱编号
+
+        ws.cell(row=r, column=2).value = dr['F'] if dr['F'] is not None else ''   # B: 品名英文
+        ws.cell(row=r, column=3).value = dr['G'] if dr['G'] is not None else ''   # C: 品名中文
+        ws.cell(row=r, column=4).value = dr['I'] if dr['I'] is not None else ''   # D: 申报数量（单箱）
+        ws.cell(row=r, column=5).value = dr['H'] if dr['H'] is not None else ''   # E: 申报单价（美金）
+        ws.cell(row=r, column=6).value = dr['B'] if dr['B'] is not None else ''   # F: 货箱重量
+        ws.cell(row=r, column=7).value = dr['C'] if dr['C'] is not None else ''   # G: 货箱长度
+        ws.cell(row=r, column=8).value = dr['D'] if dr['D'] is not None else ''   # H: 货箱宽度
+        ws.cell(row=r, column=9).value = dr['E'] if dr['E'] is not None else ''   # I: 货箱高度
+        ws.cell(row=r, column=10).value = _format_hs_code(dr['K'])                # J: 海关编码
+        ws.cell(row=r, column=11).value = dr['M'] if dr['M'] is not None else ''  # K: 品牌
+        ws.cell(row=r, column=12).value = dr['J'] if dr['J'] is not None else ''  # L: 材质
+        ws.cell(row=r, column=13).value = dr['N'] if dr['N'] is not None else ''  # M: 型号
+        ws.cell(row=r, column=14).value = dr['L'] if dr['L'] is not None else ''  # N: 用途
+
+    num_data = len(tr.data_rows)
+    wb.save(output_path)
+
+    print(f'✅ 美琦美线发票已生成: {os.path.basename(output_path)}')
+    print(f'   数据: {num_data} 行, 箱数: {box_count_total}')
+    return True
+
+
 def _guess_product_category(tr):
     """
     从 TR 发票的多个产品中文品名推断物品属性。
@@ -1017,7 +1211,7 @@ def batch_convert(input_dir, output_dir, target='天图'):
     files = [f for f in os.listdir(input_dir)
              if f.endswith('.xlsx') and '订单' not in f
              and '模板' not in f and '天图' not in f
-             and '航乐' not in f]
+             and '航乐' not in f and '美琦' not in f]
     files.sort()
 
     if not files:
@@ -1048,6 +1242,8 @@ def batch_convert(input_dir, output_dir, target='天图'):
                 ok = convert_to_hangle(tr, out_path, region='uk')
             elif target == '航乐-eu':
                 ok = convert_to_hangle(tr, out_path, region='eu')
+            elif target == '美琦':
+                ok = convert_to_meiqi(tr, out_path)
             else:
                 print(f'❌ 未知目标格式: {target}')
                 return
@@ -1359,7 +1555,7 @@ def main():
     parser.add_argument('input', nargs='?',
                         help='TR发票 .xlsx 文件路径')
     parser.add_argument('--to', '-t', default='天图',
-                        choices=['天图', '航乐-uk', '航乐-eu'],
+                        choices=['天图', '航乐-uk', '航乐-eu', '美琦'],
                         help='目标供应商格式 (默认: 天图)')
     parser.add_argument('output', nargs='?',
                         help='输出文件路径 (可选，默认自动生成)')
@@ -1370,7 +1566,8 @@ def main():
     parser.add_argument('--out-dir', default=os.path.join(SCRIPT_DIR, 'output'),
                         help='批量模式的输出目录 (默认: ./output)')
 
-    args = parser.parse_args()
+    # 用 parse_intermixed_args 支持 `输入 --to 目标 输出` 的位置参数穿插
+    args = parser.parse_intermixed_args()
 
     # ── 批量模式 ──
     if args.batch:
@@ -1404,6 +1601,9 @@ def main():
         elif args.to == '航乐-eu':
             args.output = os.path.join(os.path.dirname(args.input),
                                        f'{base_name}-航乐-EU.xlsx')
+        elif args.to == '美琦':
+            args.output = os.path.join(os.path.dirname(args.input),
+                                       f'{base_name}-美琦.xlsx')
 
     # 执行转换
     if args.to == '天图':
@@ -1412,6 +1612,8 @@ def main():
         convert_to_hangle(tr, args.output, region='uk')
     elif args.to == '航乐-eu':
         convert_to_hangle(tr, args.output, region='eu')
+    elif args.to == '美琦':
+        convert_to_meiqi(tr, args.output)
 
 
 if __name__ == '__main__':
