@@ -36,10 +36,17 @@ DEFAULT_COUNTRY_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fil
 
 # ── 辅助函数 ──
 
-def extract_fba_id(box_no):
-    """从货箱编号提取前12位 FBA ID"""
-    box_no = str(box_no).strip()
-    return box_no[:12] if len(box_no) >= 12 else box_no
+def extract_order_id(box_no):
+    """从货箱编号提取订单标识（U 序列号之前的完整部分）。
+
+    FBA 铁路:    FBA15LW37N83U000001-25 -> FBA15LW37N83
+    海外仓快递:  IBR5768187699225530630U000001 -> IBR5768187699225530630
+
+    注意：不能只用前 12 位。海外仓订单号（IBR...）前 12 位可能相同，
+    仅截 12 位会把多个不同订单折叠成同一标识，导致 SO 错配/重复。
+    """
+    m = re.match(r'^(.*?)[Uu]\d', str(box_no).strip())
+    return m.group(1) if m else str(box_no).strip()
 
 
 def calc_box_count(box_no):
@@ -140,9 +147,9 @@ def parse_system_export(filepath):
         so_no = str(ws.cell(row=r, column=2).value or '').strip()
         if not ext_box or not so_no:
             continue
-        prefix = ext_box[:12]
-        if prefix not in prefix_to_so:
-            prefix_to_so[prefix] = so_no
+        order_id = extract_order_id(ext_box)
+        if order_id not in prefix_to_so:
+            prefix_to_so[order_id] = so_no
     wb.close()
     return prefix_to_so
 
@@ -356,7 +363,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
     missing_history = []  # 记录无历史匹配的行
     for row in data_rows:
         box_no = row['box_no']
-        fba_id = extract_fba_id(box_no)
+        fba_id = extract_order_id(box_no)
         box_count = calc_box_count(box_no)
         so_no = prefix_to_so.get(fba_id, '')
 
@@ -623,7 +630,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     missing_history = []
     for row in data_rows:
         box_no = row['box_no']
-        fba_id = extract_fba_id(box_no)
+        fba_id = extract_order_id(box_no)
         box_count = calc_box_count(box_no)
         so_no = prefix_to_so.get(fba_id, '')
 
