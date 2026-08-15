@@ -186,6 +186,27 @@ def _to_float(v):
         return None
 
 
+def merge_duplicate_picking_rows(output_rows):
+    """合并完全重复的数据行（海外仓快递派等"单行单箱"发票）。
+
+    同一 运单号+渠道+仓库 下，FBA ID 完全一致时，再按 中/英文品名、实重、
+    长宽高区分唯一性；完全一致的行合并为一行，总箱数(CTN)累加。
+    不同 SO/渠道/仓库 或 FBA ID 不同、品名/尺寸不同 → 不合并。
+    """
+    merged = {}
+    for row in output_rows:
+        key = (
+            row.get('so_no', ''), row.get('service', ''), row.get('warehouse', ''),
+            row.get('fba_id', ''), row.get('cn_name', ''), row.get('en_name', ''),
+            row.get('weight'), row.get('length'), row.get('width'), row.get('height'),
+        )
+        if key in merged:
+            merged[key]['box_count'] = (merged[key].get('box_count') or 0) + (row.get('box_count') or 0)
+        else:
+            merged[key] = dict(row)
+    return list(merged.values())
+
+
 def parse_quotation(filepath):
     """解析报价表，返回 {warehouse: {e_price, f_price, supplier_ch}} 映射
 
@@ -340,6 +361,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
         so_no = prefix_to_so.get(fba_id, '')
 
         cn_name = str(row['cn_name'] or '').strip()
+        en_name = str(row.get('en_name') or '').strip()
         weight = _to_float(row['weight'])
         length = _to_float(row['length'])
         width = _to_float(row['width'])
@@ -364,6 +386,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
             'customs': '',    # 手动输入
             'fba_id': fba_id,
             'cn_name': cn_name,
+            'en_name': en_name,
             'pickup_fee': '', # 手动输入
             'box_count': box_count,
             'weight': weight,
@@ -383,6 +406,9 @@ def generate_picking_output(invoice_file, system_file, output_path,
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
+
+    # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
+    output_rows = merge_duplicate_picking_rows(output_rows)
 
     # ── 写入模板 ──
     _write_output_to_template(output_rows, template_file, output_path)
@@ -602,6 +628,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         so_no = prefix_to_so.get(fba_id, '')
 
         cn_name = str(row['cn_name'] or '').strip()
+        en_name = str(row.get('en_name') or '').strip()
         weight = _to_float(row['weight'])
         length = _to_float(row['length'])
         width = _to_float(row['width'])
@@ -625,6 +652,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
             'ship_name': '', 'customs': '',
             'fba_id': fba_id,
             'cn_name': cn_name,
+            'en_name': en_name,
             'pickup_fee': '',
             'box_count': box_count,
             'weight': weight, 'length': length, 'width': width, 'height': height,
@@ -641,6 +669,9 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
+
+    # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
+    output_rows = merge_duplicate_picking_rows(output_rows)
 
     # ── 写入模板（复用内部的写入逻辑）──
     _write_output_to_template(output_rows, template_file, output_path)
