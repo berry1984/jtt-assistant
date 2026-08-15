@@ -215,12 +215,20 @@ def merge_duplicate_picking_rows(output_rows):
 
 
 def parse_quotation(filepath):
-    """解析报价表，返回 {warehouse: {e_price, f_price, supplier_ch}} 映射
+    """解析报价表，返回 {warehouse: {e_price, f_price, supplier_ch, jtt_ch}} 映射
 
-    报价表格式：
-        A列=物流渠道, B列=后台仓库, C列=应收单价, G列=供应商渠道, H列=应付单价
+    按表头名称识别列（兼容服务端默认 pivot 报价表与用户上传的新报价单）：
+        - 后台仓库/FBA仓库/仓库 列   → 匹配键（仓库）
+        - 应收单价 列               → e_price
+        - 应付单价 列               → f_price
+        - JTT物流渠道/JTT渠道 列    → jtt_ch（客户渠道）
+        - 供应商渠道 列             → supplier_ch
 
-    匹配逻辑：以 后台仓库(B列) 为键，同一仓库有多条记录时取最后一条。
+    列名找不到时回退：
+        - 无 JTT 列 → jtt_ch 取「物流渠道」列（服务端默认 pivot 报价表 A 列即 JTT 渠道名）
+        - 无供应商渠道列 → supplier_ch 取「物流渠道」列（若该列未被 jtt_ch 占用）
+
+    匹配逻辑：以 仓库 列为键，同一仓库有多条记录时取最后一条。
     """
     if not filepath or not os.path.exists(filepath):
         return {}
@@ -229,24 +237,51 @@ def parse_quotation(filepath):
     ws = None
     for sn in wb.sheetnames:
         s = wb[sn]
-        if s.max_row >= 3 and s.max_column >= 8:
+        if s.max_row >= 3 and s.max_column >= 3:
             ws = s
             break
     if ws is None:
         wb.close()
         return {}
+    # 表头识别（第1行）
+    headers = {}
+    for c in range(1, ws.max_column + 1):
+        headers[c] = str(ws.cell(row=1, column=c).value or '').strip()
+
+    def find_col(*needles, exclude=()):
+        for c, h in headers.items():
+            if not h:
+                continue
+            if any(x in h for x in exclude):
+                continue
+            if any(n in h for n in needles):
+                return c
+        return None
+
+    col_wh  = find_col('后台仓库', 'FBA仓库', '仓库', '仓点')
+    col_e   = find_col('应收单价', '应收')
+    col_f   = find_col('应付单价', '应付')
+    col_jtt = find_col('JTT物流渠道', 'JTT渠道', 'JTT')
+    col_sup = find_col('供应商渠道', '供应商物流渠道')
+    # 「物流渠道」列：排除 JTT/供应商 列（如 "JTT物流渠道" 也含 "物流渠道" 子串）
+    col_lu  = find_col('物流渠道', exclude=('JTT', '供应商'))
+    if col_jtt is None and col_lu is not None:
+        col_jtt = col_lu  # 默认 pivot：A列「物流渠道」= JTT渠道（客户渠道）
+    if col_sup is None and col_lu is not None and col_lu != col_jtt:
+        col_sup = col_lu  # 用户上传格式：「物流渠道」= 供应商渠道
+
     quotation = {}
     for r in range(2, ws.max_row + 1):
-        warehouse = str(ws.cell(row=r, column=2).value or '').strip()
+        warehouse = str(ws.cell(row=r, column=col_wh).value or '').strip() if col_wh else ''
         if not warehouse:
             continue
-        e_price = _to_float(ws.cell(row=r, column=3).value)
-        f_price = _to_float(ws.cell(row=r, column=8).value)   # H列=应付单价
-        supplier_ch = str(ws.cell(row=r, column=7).value or '').strip()  # G列=供应商渠道
+        e_price = _to_float(ws.cell(row=r, column=col_e).value) if col_e else None
+        f_price = _to_float(ws.cell(row=r, column=col_f).value) if col_f else None
         quotation[warehouse] = {
             'e_price': e_price if e_price is not None else '',
             'f_price': f_price if f_price is not None else '',
-            'supplier_ch': supplier_ch,
+            'supplier_ch': str(ws.cell(row=r, column=col_sup).value or '').strip() if col_sup else '',
+            'jtt_ch': str(ws.cell(row=r, column=col_jtt).value or '').strip() if col_jtt else '',
         }
     wb.close()
     return quotation
@@ -389,6 +424,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
             'e_price': q_info.get('e_price', ''),
             'f_price': q_info.get('f_price', ''),
             'supplier_ch': q_info.get('supplier_ch', ''),
+            'jtt_ch': q_info.get('jtt_ch', ''),
             'ship_name': '',  # 手动输入
             'customs': '',    # 手动输入
             'fba_id': fba_id,
@@ -496,8 +532,10 @@ def _write_output_to_template(output_rows, template_file, output_path):
         c1 = ws.cell(row=start_row, column=1)
         c1.value = group[0]['so_no']
         _style_data_cell(c1)
+        # 客户渠道(B列)：优先取报价单的 JTT物流渠道，无匹配时回退发票"服务"列
+        channel = group[0].get('jtt_ch') or group[0].get('service', '')
         c2 = ws.cell(row=start_row, column=2)
-        c2.value = group[0]['service']
+        c2.value = channel
         _style_data_cell(c2)
         c3 = ws.cell(row=start_row, column=3)
         c3.value = group[0]['country']
@@ -569,7 +607,10 @@ def _write_output_to_template(output_rows, template_file, output_path):
             _style_data_cell(cell_ab)
             # AC列=计费重（公式）
             cell_ac = ws.cell(row=r, column=30)
-            cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
+            if '快递派' in channel:  # 客户渠道为快递派：单箱最低计费重不小于 12kg
+                cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r},M{r}*12),0)'
+            else:
+                cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
             _style_data_cell(cell_ac)
             # 行高
             ws.row_dimensions[r].height = 30
@@ -656,6 +697,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
             'e_price': q_info.get('e_price', ''),
             'f_price': q_info.get('f_price', ''),
             'supplier_ch': q_info.get('supplier_ch', ''),
+            'jtt_ch': q_info.get('jtt_ch', ''),
             'ship_name': '', 'customs': '',
             'fba_id': fba_id,
             'cn_name': cn_name,
