@@ -540,11 +540,12 @@ def _write_output_to_template(output_rows, template_file, output_path):
         c3 = ws.cell(row=start_row, column=3)
         c3.value = group[0]['country']
         _style_data_cell(c3)
-        c4 = ws.cell(row=start_row, column=4)
-        c4.value = group[0]['warehouse']
-        _style_data_cell(c4)
         for row_data in group:
             r = current_row
+            # D列=仓库代码：同一分组内仓库一致，每行重复填写
+            c4 = ws.cell(row=r, column=4)
+            c4.value = row_data.get('warehouse', '')
+            _style_data_cell(c4)
             # E列=应收单价, F列=应付单价, G列=供应商渠道（从报价单读取）
             for col, key in [(5, 'e_price'), (6, 'f_price'), (7, 'supplier_ch')]:
                 cell = ws.cell(row=r, column=col)
