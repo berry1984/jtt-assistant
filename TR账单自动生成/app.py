@@ -810,12 +810,17 @@ def price_query_generate():
 # ═══════════════════════════════════════════
 
 def _get_ym_module():
-    """延迟导入/重载 ym_cost_match 模块（位于 /Users/admin/报价工具）。"""
+    """延迟导入/重载 ym_cost_match 模块。
+    桌面优先用 /Users/admin/报价工具 的本地活版；云端(Railway)无该路径时用仓库内置版
+    (TR账单自动生成/ym_cost_match.py)。"""
     import importlib
     mod_name = 'ym_cost_match'
     if mod_name in sys.modules:
         return importlib.reload(sys.modules[mod_name])
-    sys.path.insert(0, PRICE_QUERY_DIR)
+    for base in (PRICE_QUERY_DIR, THIS_DIR):
+        if os.path.isfile(os.path.join(base, 'ym_cost_match.py')):
+            sys.path.insert(0, base)
+            break
     return importlib.import_module(mod_name)
 
 
