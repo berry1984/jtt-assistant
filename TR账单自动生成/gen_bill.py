@@ -131,7 +131,7 @@ def build_rows(orders, picks, prices):
     for so, o in sorted(orders.items()):
         service = o['服务']
         volumetric_mode = service in VOLUMETRIC_SERVICES
-        date_val = o.get('发货日期', o.get('工作日期', ''))
+        date_val = o.get('创建日期') or o.get('发货日期') or o.get('工作日期', '')
         # 仓库代码匹配：优先「仓库代码」列（截取第一个 - 之前）；
         # 为空时回退「收件人」——仅当 - 后为 Amazon 才截取 - 前，否则保留完整
         wh_raw = str(o.get('仓库代码', '') or '').strip()
@@ -290,8 +290,10 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         row_num = 4 + i
         ws.row_dimensions[row_num].height = 20
         
-        # Format date: serial → "5月23日"
-        if isinstance(r['date'], (int, float)):
+        # Format date: datetime / serial → "8月19日"
+        if isinstance(r['date'], datetime):
+            date_str = f"{r['date'].month}月{r['date'].day}日"
+        elif isinstance(r['date'], (int, float)):
             dt = datetime(1899, 12, 30) + timedelta(days=r['date'])
             date_str = f"{dt.month}月{dt.day}日"
         else:
@@ -600,9 +602,12 @@ def main():
     # Compute date range from orders
     date_serials = []
     for o in orders.values():
-        d = o.get('发货日期', o.get('工作日期'))
-        if d:
-            date_serials.append(d)
+        # 创建日期优先，为空回退发货日期→工作日期（避免有表头但无值导致日期段退化为固定 .1-.7）
+        d = o.get('创建日期') or o.get('发货日期') or o.get('工作日期')
+        if isinstance(d, datetime):
+            d = (d - datetime(1899, 12, 30)).days
+        if isinstance(d, (int, float)):
+            date_serials.append(int(d))
 
     if date_serials:
         base = datetime(1899, 12, 30)
@@ -637,10 +642,10 @@ def main():
     total = sum_O + sum_P + sum_Q + sum_R + customs_S + customs_T
     total_rounded = round(total, 1)
 
-    # Auto-generate filename (dynamic month/year)
+    # Auto-generate filename (dynamic year/month)
     file_month = date_range_str.split('.')[0] if date_range_str and '.' in date_range_str else f'{datetime.now().month}'
     output_path = sys.argv[4] if len(sys.argv) > 4 else \
-        f'{file_month}月拓锐FBA仓-分段开票账单-JTT({date_range_str}) RMB {total_rounded}.xlsx'
+        f'{year}年{file_month}月拓锐FBA仓-分段开票账单-JTT({date_range_str}) RMB {total_rounded}.xlsx'
 
     print(f"📄 输出: {output_path}")
 

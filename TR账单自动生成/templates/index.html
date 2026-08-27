@@ -156,6 +156,16 @@
     📜 提单保函
     <span class="badge">退税资料→PDF</span>
   </button>
+  <button class="tab-btn {% if active_tab == 'price_query' %}active{% endif %}"
+          onclick="switchTab('price_query')">
+    💰 报价查询
+    <span class="badge">供应商比价</span>
+  </button>
+  <button class="tab-btn {% if active_tab == 'ym_cost' %}active{% endif %}"
+          onclick="location.href='/ym_cost'">
+    📈 英美成本
+    <span class="badge">逐行匹配</span>
+  </button>
 </div>
 
 <div class="container">
@@ -408,6 +418,74 @@
     <div id="blDocsResult" style="display:none; margin-top:20px; padding:16px; border-radius:10px; font-size:14px; line-height:1.6;"></div>
   </div>
 
+  <!-- ════════════════════════════════════════ -->
+  <!-- Tab: 报价查询（成本分析 + 多文件上传导出） -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'price_query' %}active{% endif %}" id="tab-price_query">
+
+    <div class="info-box">
+      <strong>💰 功能：</strong>上传JTT模板 + 供应商报价文件 → <strong>自动匹配生成成本利润分析表</strong>（Excel下载）<br>
+      <strong>📎 规则：</strong>利润 = JTT报价 - JTT报价×扣减率(美国5%/其他8%) - 供应商成本单价<br>
+      <strong>💡 支持：</strong>多份供应商文件同时上传 · 最低成本绿色高亮 · 利润正负分色
+    </div>
+
+    <!-- ── 上传生成区 ── -->
+    <div style="margin-bottom:16px;padding:18px;border:2px solid #a5d6a7;border-radius:12px;background:#f1f8e9;">
+      <div style="font-size:15px;font-weight:700;color:#2e7d32;margin-bottom:12px;">📤 上传模板 + 供应商报价 &rarr; 生成成本利润表</div>
+      <form id="pqGenerateForm" method="post" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <div style="flex:1;min-width:200px;">
+            <label style="font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:4px;">① JTT成本报价模板 <span style="color:#c62828;">*</span></label>
+            <input type="file" name="template_file" accept=".xlsx" required
+                   style="width:100%;padding:8px;border:1px solid #a5d6a7;border-radius:8px;font-size:13px;">
+          </div>
+          <div style="flex:2;min-width:300px;">
+            <label style="font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:4px;">② 供应商报价文件（可多选） <span style="color:#c62828;">*</span></label>
+            <input type="file" name="supplier_files" accept=".xlsx" multiple required
+                   style="width:100%;padding:8px;border:1px solid #a5d6a7;border-radius:8px;font-size:13px;">
+            <div style="font-size:11px;color:#888;margin-top:2px;">按住 Ctrl/Cmd 多选，可同时选多家供应商文件</div>
+          </div>
+          <div style="min-width:120px;align-self:flex-end;">
+            <button type="submit" id="pqGenBtn"
+                    style="width:100%;padding:10px 20px;border:none;border-radius:8px;background:#2e7d32;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">
+              ⚡ 生成并导出
+            </button>
+          </div>
+        </div>
+      </form>
+      <div id="pqGenMsg" style="margin-top:8px;font-size:13px;display:none;"></div>
+    </div>
+
+    <!-- ── 搜索栏 ── -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+      <select id="pqCountry" style="flex:1;min-width:100px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="pqLoad()">
+        <option value="">🌍 全部国家</option>
+        <option value="美国">🇺🇸 美国</option>
+        <option value="加拿大">🇨🇦 加拿大</option>
+        <option value="欧洲">🇪🇺 欧洲</option>
+        <option value="英国">🇬🇧 英国</option>
+      </select>
+      <select id="pqSupplier" style="flex:1;min-width:100px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="pqLoad()">
+        <option value="">🏢 全部供应商</option>
+        <option value="天图/心一">天图/心一</option>
+        <option value="英美">英美</option>
+        <option value="美琦">美琦</option>
+        <option value="凯鑫">凯鑫</option>
+        <option value="航乐">航乐</option>
+        <option value="皓鹏">皓鹏</option>
+      </select>
+      <input type="text" id="pqKeyword" placeholder="🔍 搜索渠道名称..." style="flex:2;min-width:150px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;" oninput="pqDebounce()">
+      <button onclick="pqLoad(true)" style="padding:10px 18px;border:none;border-radius:10px;background:#4f46e5;color:#fff;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">🔄 刷新</button>
+    </div>
+
+    <div id="pqLoading" style="text-align:center;padding:40px 0;color:#999;display:none;">
+      <div style="font-size:32px;margin-bottom:10px;">⏳</div><div>正在加载数据...</div>
+    </div>
+    <div id="pqError" style="display:none;padding:16px;border-radius:10px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;margin-bottom:16px;"></div>
+    <div id="pqSummary" style="display:none;margin-bottom:16px;"></div>
+    <div id="pqResults"></div>
+  </div>
+
   <div class="footer">JTT电商AI助手 v1.0</div>
 </div>
 
@@ -419,7 +497,7 @@ function switchTab(name) {
   document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
   // URL 更新
-  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance', bl_docs: '/bl_docs'};
+  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance', bl_docs: '/bl_docs', price_query: '/price_query'};
   history.replaceState(null, '', urls[name] || '/');
 }
 
@@ -593,6 +671,188 @@ Object.entries(FORM_CONFIG).forEach(([formId, cfg]) => {
     return true;
   });
 })();
+
+// ── 报价查询（成本分析 + 多文件上传 + 导出） ──
+
+// ── 生成导出表单 ──
+document.getElementById('pqGenerateForm')?.addEventListener('submit', function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('pqGenBtn');
+  const msg = document.getElementById('pqGenMsg');
+  const origText = btn.textContent;
+
+  const tmplFile = this.querySelector('[name=template_file]').files[0];
+  const supFiles = this.querySelector('[name=supplier_files]').files;
+  if (!tmplFile) { showGenMsg('请选择JTT模板文件', 'error'); return; }
+  if (supFiles.length === 0) { showGenMsg('请选择至少一份供应商报价文件', 'error'); return; }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ 正在匹配生成...';
+  msg.style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('template_file', tmplFile);
+  for (const f of supFiles) fd.append('supplier_files', f);
+
+  fetch('/api/price_query/generate', { method: 'POST', body: fd })
+    .then(res => {
+      const cd = res.headers.get('Content-Disposition') || '';
+      if (cd.includes('attachment')) {
+        let filename = '成本利润表.xlsx';
+        const star = cd.match(/filename\*=UTF-8''([^;\n]*)/);
+        if (star) filename = decodeURIComponent(star[1]);
+        else { const p = cd.match(/filename[^;=\n]*=((["']).*?\2|[^;\n]*)/); if (p) filename = p[1].replace(/["']/g,''); }
+        return res.blob().then(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = filename;
+          document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+          showGenMsg('✅ 生成完成! 已下载: ' + filename, 'success');
+          btn.textContent = '✅ 已导出';
+          setTimeout(() => { btn.disabled = false; btn.textContent = origText; }, 3000);
+        });
+      }
+      return res.json().then(d => { showGenMsg('❌ ' + (d.error||'生成失败'), 'error'); btn.disabled = false; btn.textContent = origText; });
+    })
+    .catch(() => { showGenMsg('❌ 网络错误', 'error'); btn.disabled = false; btn.textContent = origText; });
+});
+
+function showGenMsg(text, type) {
+  const msg = document.getElementById('pqGenMsg');
+  msg.style.display = 'block';
+  msg.style.padding = '10px 14px';
+  msg.style.borderRadius = '8px';
+  msg.style.background = type === 'error' ? '#fef2f2' : '#f0faf6';
+  msg.style.color = type === 'error' ? '#dc2626' : '#059669';
+  msg.style.border = '1px solid ' + (type === 'error' ? '#fecaca' : '#4ecca3');
+  msg.textContent = text;
+}
+
+// ── 数据加载 ──
+let pqTimer = null;
+function pqDebounce() { clearTimeout(pqTimer); pqTimer = setTimeout(pqLoad, 300); }
+
+function pqLoad(force) {
+  const country = document.getElementById('pqCountry').value;
+  const supplier = document.getElementById('pqSupplier').value;
+  const keyword = document.getElementById('pqKeyword').value;
+  const loading = document.getElementById('pqLoading');
+  const error = document.getElementById('pqError');
+  const summary = document.getElementById('pqSummary');
+  const results = document.getElementById('pqResults');
+
+  loading.style.display = 'block'; error.style.display = 'none';
+  summary.style.display = 'none'; results.innerHTML = '';
+
+  let url = '/api/price_query?';
+  if (force) url += 'force=1&';
+  if (country) url += 'country=' + encodeURIComponent(country) + '&';
+  if (supplier) url += 'supplier=' + encodeURIComponent(supplier) + '&';
+  if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      loading.style.display = 'none';
+      if (data.error) { error.textContent = '❌ ' + data.error; error.style.display = 'block'; return; }
+      renderCostAnalysis(data);
+    })
+    .catch(e => { loading.style.display = 'none'; error.textContent = '❌ ' + e.message; error.style.display = 'block'; });
+}
+
+function flagIcon(cn) { return {'美国':'🇺🇸','加拿大':'🇨🇦','欧洲':'🇪🇺','英国':'🇬🇧'}[cn]||'🌍'; }
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function renderCostAnalysis(data) {
+  const results = document.getElementById('pqResults');
+  const countries = data.countries || {};
+  const supDates = data.update_dates || {};
+  const keys = Object.keys(countries);
+  if (!keys.length) { results.innerHTML = '<div style="text-align:center;padding:40px;color:#999;">暂无数据</div>'; return; }
+
+  let totalCh = 0;
+  for (const cd of Object.values(countries)) totalCh += cd.channel_count || 0;
+  const summary = document.getElementById('pqSummary');
+  summary.style.display = 'block';
+  summary.innerHTML = '<div style="padding:12px 16px;background:#f0faf6;border-radius:10px;border:1px solid #4ecca3;font-size:13px;">' +
+    '📊 共 <strong>' + totalCh + '</strong> 个渠道 · ' + keys.length + ' 个国家 · ' + (data.suppliers_avail||[]).length + ' 家供应商' +
+    '<span style="float:right;font-size:12px;color:#999;">绿色底色 = 最低成本价</span></div>';
+
+  let html = '';
+  const SUPPLIER_COLORS = {'天图/心一':'#e8f5e9','英美':'#e3f2fd','美琦':'#fff3e0','凯鑫':'#fce4ec','航乐':'#f3e5f5','皓鹏':'#e0f2f1'};
+
+  for (const [cn, cd] of Object.entries(countries)) {
+    const byType = cd.by_shipping_type || {};
+    const allSup = cd.applicable_suppliers || [];
+
+    html += '<div style="margin-bottom:20px;border:1px solid #c8e6c9;border-radius:12px;overflow:hidden;">';
+    html += '<div style="background:#e8f5e9;padding:12px 18px;font-size:16px;font-weight:700;color:#2e7d32;border-bottom:2px solid #a5d6a7;">';
+    html += flagIcon(cn) + ' ' + cn + ' <span style="font-weight:400;font-size:13px;color:#558b2f;">' + cd.channel_count + ' 渠道</span></div>';
+
+    for (const [st, chs] of Object.entries(byType)) {
+      html += '<div style="padding:0 12px;">';
+      html += '<div style="padding:10px 6px 6px;font-size:13px;font-weight:600;color:#558b2f;">🚚 ' + st + ' (' + chs.length + ')</div>';
+
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px;">';
+      html += '<thead><tr style="background:#2e7d32;color:#fff;">';
+      html += '<th rowspan="2" style="padding:8px 10px;text-align:left;border:1px solid #1b5e20;min-width:140px;">JTT系统渠道</th>';
+      html += '<th rowspan="2" style="padding:8px 4px;text-align:center;border:1px solid #1b5e20;white-space:nowrap;">JTT<br>报价</th>';
+      for (const s of allSup) {
+        const bg = SUPPLIER_COLORS[s] || '#f5f5f5';
+        html += '<th colspan="4" style="padding:6px 4px;text-align:center;border:1px solid #1b5e20;background:' + bg + ';color:#1b5e20;font-size:12px;">';
+        html += s + ' <span style="font-weight:400;font-size:10px;color:#558b2f;">' + (supDates[s]||'') + '</span></th>';
+      }
+      html += '</tr><tr style="background:#a5d6a7;">';
+      for (const s of allSup) {
+        html += '<th style="padding:4px 3px;text-align:center;border:1px solid #81c784;font-size:11px;color:#1b5e20;white-space:nowrap;">供应商渠道</th>';
+        html += '<th style="padding:4px 3px;text-align:center;border:1px solid #81c784;font-size:11px;color:#1b5e20;white-space:nowrap;">成本单价</th>';
+        html += '<th style="padding:4px 3px;text-align:center;border:1px solid #81c784;font-size:11px;color:#1b5e20;white-space:nowrap;">预估利润</th>';
+        html += '<th style="padding:4px 3px;text-align:center;border:1px solid #81c784;font-size:11px;color:#1b5e20;white-space:nowrap;">利润率</th>';
+      }
+      html += '</tr></thead><tbody>';
+
+      for (const ch of chs) {
+        const qp = ch.quote_price;
+        html += '<tr style="border-bottom:1px solid #c8e6c9;">';
+        html += '<td style="padding:6px 10px;border:1px solid #c8e6c9;font-weight:500;color:#1b5e20;">' + esc(ch.name) + '</td>';
+        html += '<td style="padding:6px 4px;border:1px solid #c8e6c9;text-align:center;font-weight:600;color:#2e7d32;">' + (qp!==null&&qp!==undefined ? '¥' + Number(qp).toFixed(2) : '—') + '</td>';
+
+        for (const s of allSup) {
+          const si = ch.suppliers[s];
+          if (!si || si.price === null || si.price === undefined) {
+            for (let ci=0;ci<4;ci++) html += '<td style="padding:4px 3px;border:1px solid #c8e6c9;text-align:center;color:#ccc;">/</td>';
+            continue;
+          }
+          const price = si.price;
+          const profit = si.profit;
+          const chName = si.channel || '/';
+          const allPrices = allSup.map(sp => ch.suppliers[sp]?.price).filter(p => p!==null && p!==undefined);
+          const minPrice = allPrices.length ? Math.min(...allPrices) : null;
+          const isMin = minPrice!==null && Math.abs(price-minPrice)<0.01;
+          const margin = (qp && qp>0 && profit!==null) ? (profit/qp*100).toFixed(1) : null;
+
+          html += '<td style="padding:4px 3px;border:1px solid #c8e6c9;text-align:center;font-size:11px;color:#555;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(chName) + '">' + esc(chName) + '</td>';
+          html += '<td style="padding:4px 3px;border:1px solid #c8e6c9;text-align:center;' + (isMin?'background:#c8e6c9;font-weight:700;':'background:#f1f8e9;') + '">';
+          html += '<span style="font-weight:' + (isMin?'700':'500') + ';color:' + (isMin?'#1b5e20':'#333') + ';">¥' + Number(price).toFixed(2) + '</span>';
+          if (isMin) html += '<br><span style="font-size:10px;color:#2e7d32;font-weight:600;">最低</span>';
+          html += '</td>';
+          html += '<td style="padding:4px 3px;border:1px solid #c8e6c9;text-align:center;' + (profit!==null&&profit>0?'background:#e8f5e9;':profit!==null?'background:#fce4ec;':'') + '">';
+          html += profit!==null ? '<span style="color:' + (profit>0?'#2e7d32':'#c62828') + ';font-weight:' + (profit>0?'600':'500') + ';">¥' + Number(profit).toFixed(2) + '</span>' : '<span style="color:#999;">—</span>';
+          html += '</td>';
+          html += '<td style="padding:4px 3px;border:1px solid #c8e6c9;text-align:center;font-size:11px;">';
+          html += margin!==null ? '<span style="color:' + (parseFloat(margin)>0?'#2e7d32':'#c62828') + ';">' + margin + '%</span>' : '<span style="color:#999;">—</span>';
+          html += '</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+  }
+  results.innerHTML = html;
+}
+
+// 自动加载
+(function() { if (document.getElementById('tab-price_query')?.classList.contains('active')) pqLoad(); })();
 </script>
 </body>
 </html>

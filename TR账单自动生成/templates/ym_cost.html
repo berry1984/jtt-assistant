@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>英美成本报价匹配 - JTT电商AI助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f0f2f5; color: #1f2329; line-height: 1.6;
+  }
+  .topbar {
+    background: #fff; border-bottom: 1px solid #e5e6eb; padding: 14px 32px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .topbar a { color: #4e5969; text-decoration: none; font-size: 14px; }
+  .topbar a:hover { color: #165dff; }
+  .topbar .brand { font-weight: 600; font-size: 16px; color: #1d2129; }
+  .topbar .brand b { color: #165dff; }
+  .wrap { max-width: 760px; margin: 32px auto; padding: 0 20px; }
+  .card {
+    background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(29,33,41,.06);
+    padding: 28px 32px; margin-bottom: 20px;
+  }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .sub { color: #86909c; font-size: 14px; margin-bottom: 18px; }
+  h2 { font-size: 15px; margin: 20px 0 10px; color: #1d2129; }
+  ol.steps { padding-left: 20px; color: #4e5969; font-size: 14px; }
+  ol.steps li { margin-bottom: 6px; }
+  label { display: block; font-size: 14px; color: #1d2129; margin: 16px 0 6px; font-weight: 500; }
+  .hint { font-size: 12px; color: #86909c; margin-top: 4px; }
+  input[type="file"] {
+    width: 100%; padding: 10px 12px; border: 1px dashed #c9cdd4; border-radius: 6px;
+    background: #f7f8fa; font-size: 13px; color: #1d2129;
+  }
+  input[type="file"]:hover { border-color: #165dff; }
+  button {
+    margin-top: 24px; padding: 11px 28px; border: none; border-radius: 6px;
+    background: #165dff; color: #fff; font-size: 15px; font-weight: 500; cursor: pointer;
+  }
+  button:hover { background: #0e42d2; }
+  button:disabled { background: #a9b7e6; cursor: not-allowed; }
+  .status {
+    display: none; margin-top: 18px; padding: 12px 16px; border-radius: 6px; font-size: 14px;
+  }
+  .status.err { background: #ffece8; color: #cb272d; border: 1px solid #fbaca3; }
+  .status.ok { background: #e8ffea; color: #00b42a; border: 1px solid #7be188; }
+  .status.info { background: #e8f3ff; color: #165dff; border: 1px solid #a9b7e6; }
+  .summary { margin-top: 14px; font-size: 13px; color: #4e5969; }
+  .summary b { color: #1d2129; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { border: 1px solid #e5e6eb; padding: 7px 10px; text-align: left; }
+  th { background: #f7f8fa; color: #4e5969; font-weight: 500; white-space: nowrap; }
+  .tag { display: inline-block; background: #e8f3ff; color: #165dff; border-radius: 4px;
+         padding: 1px 8px; font-size: 12px; margin-right: 4px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="brand">JTT<b>电商AI助手</b></span>
+  <a href="/">← 返回首页</a>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <h1>英美成本报价匹配</h1>
+    <div class="sub">英美跨境专版 v2.0 · 逐行匹配每个仓点/邮编的供应商成本与预估利润，填入输出模板绿色列</div>
+
+    <h2>使用步骤</h2>
+    <ol class="steps">
+      <li>上传 JTT 成本报价分析表<b>输出模板</b>（4个Sheet：美国/加拿大/欧洲/英国，已预填 A–G 列报价数据）</li>
+      <li>上传 <b>JTT+英美渠道匹配表</b>（Sheet「供应商渠道匹配」）</li>
+      <li>上传 <b>4 份供应商公布价文件</b>（可一次多选）</li>
+      <li>点击「生成并下载」，得到已填好供应商列的成本报价分析表</li>
+    </ol>
+
+    <form id="ymForm">
+      <label for="template_file">输出模板 <span class="tag">必填</span></label>
+      <input type="file" id="template_file" name="template_file" accept=".xlsx,.xls,.xlsm">
+      <div class="hint">JTT物流每周成本报价分析表输出模板-英美(1).xlsx</div>
+
+      <label for="mapping_file">渠道匹配表 <span class="tag">必填</span></label>
+      <input type="file" id="mapping_file" name="mapping_file" accept=".xlsx,.xls">
+      <div class="hint">JTT+英美渠道匹配表.xlsx（Sheet「供应商渠道匹配」）</div>
+
+      <label for="supplier_files">供应商公布价文件（4份，可多选）<span class="tag">必填</span></label>
+      <input type="file" id="supplier_files" name="supplier_files" accept=".xlsx,.xlsm,.xls" multiple>
+      <div class="hint">需含 美线(.xlsm) / 英欧线 / 加拿大 / 空派 各1份，文件名需带「英美跨境-美线 / 英美跨境物流英欧线 / 英美跨境-加拿大 / 英美跨境空派」字样以便识别</div>
+
+      <table>
+        <tr><th>类型</th><th>文件名前缀</th></tr>
+        <tr><td>美线</td><td>英美跨境-美线…</td></tr>
+        <tr><td>英欧线</td><td>英美跨境物流英欧线…</td></tr>
+        <tr><td>加拿大</td><td>英美跨境-加拿大…</td></tr>
+        <tr><td>空派</td><td>英美跨境空派…</td></tr>
+      </table>
+
+      <button type="submit" id="btn">生成并下载</button>
+
+      <div class="status" id="status"></div>
+      <div class="summary" id="summary"></div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var form = document.getElementById('ymForm');
+  var btn = document.getElementById('btn');
+  var statusEl = document.getElementById('status');
+  var summaryEl = document.getElementById('summary');
+
+  function setStatus(text, kind) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = text;
+    statusEl.className = 'status ' + (kind || 'info');
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    var template = document.getElementById('template_file').files[0];
+    var mapping = document.getElementById('mapping_file').files[0];
+    var suppliers = document.getElementById('supplier_files').files;
+    if (!template) { setStatus('请先选择输出模板文件', 'err'); return; }
+    if (!mapping) { setStatus('请先选择渠道匹配表文件', 'err'); return; }
+    if (!suppliers.length) { setStatus('请至少选择一份供应商报价文件', 'err'); return; }
+
+    var fd = new FormData();
+    fd.append('template_file', template);
+    fd.append('mapping_file', mapping);
+    for (var i = 0; i < suppliers.length; i++) fd.append('supplier_files', suppliers[i]);
+
+    btn.disabled = true;
+    btn.textContent = '正在匹配生成…';
+    setStatus('正在解析供应商文件并逐行匹配仓点/邮编，请稍候…', 'info');
+
+    fetch('/api/ym_cost/generate', { method: 'POST', body: fd })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().then(function (d) {
+            throw new Error(d.error || ('请求失败 (' + resp.status + ')'));
+          });
+        }
+        // 读取匹配统计头
+        var stats = {
+          rows: resp.headers.get('X-YM-Rows'),
+          matched: resp.headers.get('X-YM-Matched'),
+          unmatched: resp.headers.get('X-YM-Unmatched')
+        };
+        return resp.blob().then(function (blob) { return { blob: blob, stats: stats }; });
+      })
+      .then(function (r) {
+        var url = URL.createObjectURL(r.blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'JTT物流每周成本报价分析表-英美.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setStatus('✅ 生成成功，已开始下载！', 'ok');
+        if (r.stats && r.stats.rows) {
+          summaryEl.innerHTML =
+            '匹配统计：共 <b>' + r.stats.rows + '</b> 行，匹配成功 <b>' + r.stats.matched +
+            '</b>，未匹配填“/” <b>' + r.stats.unmatched + '</b>（详见输出表）';
+        }
+      })
+      .catch(function (err) {
+        setStatus('❌ ' + err.message, 'err');
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = '生成并下载';
+      });
+  });
+})();
+</script>
+</body>
+</html>
