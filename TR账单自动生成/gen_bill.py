@@ -36,6 +36,39 @@ VOLUMETRIC_SERVICES = {
     '美国快递-UPS包税-HK红单',
 }
 
+def parse_order_date(v):
+    """把订单日期解析为 datetime，兼容 datetime / Excel 数字序列号 / 常见字符串格式（含尾部空白）。
+    不强调日期格式：如 '2026-08-21 10:23:45\t'、'2026/08/21'、'2026.08.21'、'8月21日' 均可。
+    解析不了返回 None。"""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, (int, float)):
+        try:
+            return datetime(1899, 12, 30) + timedelta(days=float(v))
+        except (ValueError, TypeError):
+            return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # 完整日期（可能带时间部分），如 2026-08-13 17:12:17 / 2026/08/13 / 2026.08.13
+    m = re.match(r'^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})', s)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    # 无年份，如 8月21日（年份取当前年）
+    m = re.match(r'^(\d{1,2})月(\d{1,2})日', s)
+    if m:
+        try:
+            return datetime(datetime.now().year, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            return None
+    return None
+
+
 def find_template():
     """Find template file"""
     candidates = [
@@ -131,7 +164,12 @@ def build_rows(orders, picks, prices):
     for so, o in sorted(orders.items()):
         service = o['服务']
         volumetric_mode = service in VOLUMETRIC_SERVICES
-        date_val = o.get('创建日期') or o.get('发货日期') or o.get('工作日期', '')
+        # 日期优先：创建日期/下单时间 → 发货日期 → 工作日期；字符串格式也解析（不要求 Excel 日期类型）
+        date_val = (parse_order_date(o.get('创建日期'))
+                    or parse_order_date(o.get('下单时间'))
+                    or parse_order_date(o.get('发货日期'))
+                    or parse_order_date(o.get('工作日期'))
+                    or '')
         # 仓库代码匹配：优先「仓库代码」列（截取第一个 - 之前）；
         # 为空时回退「收件人」——仅当 - 后为 Amazon 才截取 - 前，否则保留完整
         wh_raw = str(o.get('仓库代码', '') or '').strip()
@@ -602,12 +640,13 @@ def main():
     # Compute date range from orders
     date_serials = []
     for o in orders.values():
-        # 创建日期优先，为空回退发货日期→工作日期（避免有表头但无值导致日期段退化为固定 .1-.7）
-        d = o.get('创建日期') or o.get('发货日期') or o.get('工作日期')
-        if isinstance(d, datetime):
-            d = (d - datetime(1899, 12, 30)).days
-        if isinstance(d, (int, float)):
-            date_serials.append(int(d))
+        # 下单时间/创建日期优先（字符串格式也解析），为空回退发货→工作日期（避免有表头但无值导致日期段退化为固定 .1-.7）
+        d = (parse_order_date(o.get('创建日期'))
+             or parse_order_date(o.get('下单时间'))
+             or parse_order_date(o.get('发货日期'))
+             or parse_order_date(o.get('工作日期')))
+        if d:
+            date_serials.append((d - datetime(1899, 12, 30)).days)
 
     if date_serials:
         base = datetime(1899, 12, 30)

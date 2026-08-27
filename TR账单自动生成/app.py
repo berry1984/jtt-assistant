@@ -28,7 +28,7 @@ INVOICE_DIR = os.path.join(PROJECT_DIR, '发票转换')
 sys.path.insert(0, THIS_DIR)
 sys.path.insert(0, INVOICE_DIR)
 
-from gen_bill import load_data, build_rows, sort_rows, generate_bill
+from gen_bill import load_data, build_rows, sort_rows, generate_bill, parse_order_date
 from convert_invoice import TRInvoice, convert_to_tiantu, convert_to_hangle, convert_to_meiqi
 
 # ── 提单及电放保函生成模块 ──
@@ -168,12 +168,13 @@ def generate():
         rows = sort_rows(rows, declaration_groups=declaration_groups)
         date_serials = []
         for o in orders.values():
-            # 创建日期优先，为空回退发货日期→工作日期（避免有表头但无值导致日期段退化为固定 .1-.7）
-            d = o.get('创建日期') or o.get('发货日期') or o.get('工作日期')
-            if isinstance(d, datetime):
-                d = (d - datetime(1899, 12, 30)).days
-            if isinstance(d, (int, float)):
-                date_serials.append(int(d))
+            # 下单时间/创建日期优先（字符串格式也解析），为空回退发货→工作日期
+            d = (parse_order_date(o.get('创建日期'))
+                 or parse_order_date(o.get('下单时间'))
+                 or parse_order_date(o.get('发货日期'))
+                 or parse_order_date(o.get('工作日期')))
+            if d:
+                date_serials.append((d - datetime(1899, 12, 30)).days)
 
         if date_serials:
             base = datetime(1899, 12, 30)
