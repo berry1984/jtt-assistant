@@ -500,7 +500,7 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     
     inv_data = [
         ('国际货物运输代理服务', f"='{sheet_name}'!Q{ref_row}+'{sheet_name}'!R{ref_row}+'{sheet_name}'!U{ref_row}+'{sheet_name}'!W{ref_row}", '免税', 0),
-        ('国内货物运输代理服务', f"='{sheet_name}'!O{ref_row}", 0.06, f"='{sheet_name}'!P{ref_row}"),
+        ('代理入仓费', f"='{sheet_name}'!O{ref_row}", 0.06, f"='{sheet_name}'!P{ref_row}"),
         ('经纪代理服务-报关费', f"='{sheet_name}'!S{ref_row}", 0.06, f"='{sheet_name}'!T{ref_row}"),
     ]
     
