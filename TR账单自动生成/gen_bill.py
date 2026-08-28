@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
 番茄钟账单生成器
-用途：根据 订单列表、拣货数据、应收价格 三个Excel文件，生成标准格式账单
+用途：根据 订单列表 + 内部拣货数据参考值（拣货数据模块生成） 两个Excel文件，生成标准格式账单。
+不再需要单独上传「应收价格」：单价抓取参考值模版中的「应收单价」列，重量/箱数/尺寸也从参考值抓取。
 
 用法：
-  python3 gen_bill.py <订单列表.xlsx> <拣货数据.xlsx> <应收价格.xlsx> [输出文件名.xlsx]
+  python3 gen_bill.py <订单列表.xlsx> <内部拣货数据参考值.xlsx> [输出文件名.xlsx]
 
 规则：
-  - J列(计费重) = ROUND(拣货收费重) 并调整最大项使合计匹配订单列表
-  - 特殊服务(美国快递-*包税 等)：单箱 max(材积重,实际重量) 向上取整后按 FBA 合计，不匹配订单收费重
+  - 单价(K列) = 参考值「应收单价」列（按 SO+FBA 行对应，回退仓库代码）
+  - J列(计费重) = 复刻参考值模版「计费重」公式 ROUND(MAX(参考实重×箱数, 参考材积重×箱数))，并按订单收费重调整最大项
+  - 特殊服务(美国快递-*包税 等)：不按订单收费重调整
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - 保留完整浮点精度（使用公式）
   - 排序：按渠道分组 → FBA列(箱号)含FBA字眼的运单在前 → SO → FBA
 """
 
-import sys, re, os, shutil, math
+import sys, re, os, shutil
 from datetime import datetime, timedelta
-from collections import defaultdict, OrderedDict
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -80,9 +81,123 @@ def find_template():
             return p
     return None
 
-def load_data(order_path, pick_path, price_path):
-    """Load and parse three input files"""
-    
+def _norm_header(h):
+    """表头归一化：去空白/换行，转大写。"""
+    return re.sub(r'\s+', '', str(h or '').upper())
+
+
+def _find_col(headers, needles, exclude=()):
+    """按归一化表头找列：needles 子串命中即返回，exclude 中的列号跳过。
+    调用方需保证更精确的列（如「参考实重」）先匹配并纳入 exclude。"""
+    for c, h in headers.items():
+        if c in exclude:
+            continue
+        nh = _norm_header(h)
+        for n in needles:
+            if _norm_header(n) in nh:
+                return c
+    return None
+
+
+def _parse_reference(ref_path):
+    """解析「内部拣货数据参考值」模版（拣货数据模块生成）。
+
+    列布局（行1为表头）：
+      A=系统SO号  B=客户渠道  C=国家  D=仓库代码  E=应收单价  F=应付单价
+      K=FBA ID  M=总箱数  N=实重  O=长  P=宽  Q=高
+      U=参考实重  V=参考长  W=参考宽  X=参考高  H=供应商渠道
+    SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充。
+
+    返回:
+      ref_rows: {SO: [{fba, wh, channel, country, supplier_ch, e_price,
+                       boxes, weight(N), length, width, height,
+                       ref_w, ref_l, ref_wid, ref_h}, ...]}
+      warehouse_prices: {仓库代码: 应收单价}（首见为准，供回退与报价表A）
+      price_rows_raw:   [(客户渠道, 仓库代码, 应收单价)]（按仓库去重，供报价表A）
+    """
+    wb = load_workbook(ref_path, data_only=True)
+    ws = wb.active
+    headers = {c.value: c.column for c in ws[1]}
+    # 翻转成 {列号: 表头} 便于顺序匹配
+    headers_by_col = {}
+    for h, c in headers.items():
+        headers_by_col[c] = h
+
+    # 先匹配最精确/带「参考」前缀的列，并加入 exclude 防「实重/长/宽/高」误配到参考列
+    refw_c    = _find_col(headers_by_col, ['参考实重'])
+    refl_c    = _find_col(headers_by_col, ['参考长'])
+    refwid_c  = _find_col(headers_by_col, ['参考宽'])
+    refh_c    = _find_col(headers_by_col, ['参考高'])
+    _excl = set(x for x in [refw_c, refl_c, refwid_c, refh_c] if x)
+    totw_c    = _find_col(headers_by_col, ['总实重'], _excl)   # 防「实重」命中「总实重」
+    if totw_c:
+        _excl.add(totw_c)
+
+    so_c      = _find_col(headers_by_col, ['系统SO号', 'SO号', 'SO'])
+    ch_c      = _find_col(headers_by_col, ['客户渠道'])
+    country_c = _find_col(headers_by_col, ['国家'])
+    wh_c      = _find_col(headers_by_col, ['仓库代码'])
+    e_c       = _find_col(headers_by_col, ['应收单价', '应收'])
+    f_c       = _find_col(headers_by_col, ['应付单价', '应付'])
+    sup_c     = _find_col(headers_by_col, ['供应商渠道'])
+    fba_c     = _find_col(headers_by_col, ['FBA'])
+    boxes_c   = _find_col(headers_by_col, ['总箱数', '箱数', 'CTN'])
+    w_c       = _find_col(headers_by_col, ['实重'], _excl)
+    len_c     = _find_col(headers_by_col, ['长'], _excl)
+    wid_c     = _find_col(headers_by_col, ['宽'], _excl)
+    hei_c     = _find_col(headers_by_col, ['高'], _excl)
+
+    if so_c is None or e_c is None or fba_c is None:
+        raise ValueError('参考值模版缺少必需列（系统SO号 / 应收单价 / FBA ID）')
+
+    def _s(v):
+        return '' if v is None else str(v).strip()
+
+    ref_rows = {}
+    warehouse_prices = {}
+    price_rows_raw = []
+    cur_so = cur_ch = cur_country = cur_wh = ''
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        if _s(r[so_c - 1]):
+            cur_so = _s(r[so_c - 1])
+            cur_ch = _s(r[ch_c - 1]) if ch_c else ''
+            cur_country = _s(r[country_c - 1]) if country_c else ''
+            cur_wh = _s(r[wh_c - 1]) if wh_c else ''
+        if not cur_so:
+            continue
+        fba = r[fba_c - 1]
+        if fba in (None, ''):
+            continue
+        e_price = r[e_c - 1]
+        if cur_wh and cur_wh not in warehouse_prices:
+            warehouse_prices[cur_wh] = e_price
+            price_rows_raw.append((cur_ch, cur_wh, e_price))
+        ref_rows.setdefault(cur_so, []).append({
+            'so': cur_so,
+            'fba': _s(fba),
+            'wh': cur_wh,
+            'channel': cur_ch,
+            'country': cur_country,
+            'supplier_ch': _s(r[sup_c - 1]) if sup_c else '',
+            'e_price': e_price,
+            'f_price': r[f_c - 1] if f_c else '',
+            'boxes': r[boxes_c - 1] if boxes_c else None,
+            'weight': r[w_c - 1] if w_c else None,
+            'length': r[len_c - 1] if len_c else None,
+            'width': r[wid_c - 1] if wid_c else None,
+            'height': r[hei_c - 1] if hei_c else None,
+            'ref_w': r[refw_c - 1] if refw_c else None,
+            'ref_l': r[refl_c - 1] if refl_c else None,
+            'ref_wid': r[refwid_c - 1] if refwid_c else None,
+            'ref_h': r[refh_c - 1] if refh_c else None,
+        })
+    return ref_rows, warehouse_prices, price_rows_raw
+
+
+def load_data(order_path, ref_path):
+    """Load order list + 内部拣货数据参考值, return
+    (orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups)"""
+
     # ── Order list ──
     wb = load_workbook(order_path)
     ws = wb.active
@@ -91,30 +206,14 @@ def load_data(order_path, pick_path, price_path):
     for r in ws.iter_rows(min_row=2, values_only=True):
         d = dict(zip(h, r))
         orders[d['运单号']] = d
-    
-    # ── Picking data ──
-    wb = load_workbook(pick_path)
-    ws = wb.active
-    picks = list(ws.iter_rows(min_row=2, values_only=True))
-    
-    # ── Prices ──
-    wb = load_workbook(price_path)
-    ws = wb.active
-    prices = {}
-    price_rows_raw = []  # keep raw rows (with formulas) for 报价表A
-    for r in ws.iter_rows(min_row=2, values_only=False):
-        vals = [c.value for c in r]
-        ch, wh, price, customs = vals[0], vals[1], vals[2], vals[3] if len(vals) > 3 else None
-        if wh:
-            prices[wh] = {'channel': ch, 'price': price, 'customs_fee': customs or 0}
-            price_rows_raw.append(vals)
 
-    # ── 报关分组规则：不再读取应收价格表 ──
-    # 报关组改为在生成账单时按账单内每行的 (走货渠道, SO) 直接判定（见 generate_bill），
-    # 因此这里不再读取应收价格表的 J 列做分组，固定返回空分组。
+    # ── 内部拣货数据参考值（单价/重量/箱数/尺寸来源） ──
+    ref_rows, warehouse_prices, price_rows_raw = _parse_reference(ref_path)
+
+    # ── 报关分组规则：在生成账单时按账单内每行的 (走货渠道, SO) 直接判定（见 generate_bill） ──
     declaration_groups = []
 
-    return orders, picks, prices, price_rows_raw, declaration_groups
+    return orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups
 
 def lookup_price(prices, wh_code):
     """Look up price by warehouse code, with suffix matching"""
@@ -131,15 +230,41 @@ def lookup_price(prices, wh_code):
                 break
     return p
 
-def build_rows(orders, picks, prices):
-    """Build bill rows from source data"""
+def compute_ref_weight(row, channel):
+    """复刻参考值模版「计费重」列公式：ROUND(MAX(参考实重×箱数, 参考材积重×箱数), 0)。
 
-    pick_groups = defaultdict(lambda: defaultdict(list))
-    for r in picks:
-        so = r[1]
-        m = re.match(r'(.+?)U\d+$', str(r[2]))
-        fba = m.group(1) if m else str(r[2])
-        pick_groups[so][fba].append(r)
+    参考实重/参考材积重（U/V/W/X 列，来自箱规历史）缺失时回退实际尺寸（N/O/P/Q）。
+    「快递派」渠道按模版公式单箱最低计费 12kg：MAX(总参考材积重, 箱数×12)。
+    """
+    def num(v):
+        try:
+            return float(v) if v not in (None, '') else 0
+        except (ValueError, TypeError):
+            return 0
+    M = num(row.get('boxes'))
+    if M <= 0:
+        return 0
+    ref_actual = num(row.get('ref_w'))
+    ref_l, ref_w, ref_h = num(row.get('ref_l')), num(row.get('ref_wid')), num(row.get('ref_h'))
+    ref_vol = ref_l * ref_w * ref_h / 6000.0 if (ref_l and ref_w and ref_h) else 0
+    if ref_actual or ref_vol:
+        total_actual = ref_actual * M
+        total_vol = ref_vol * M
+        if '快递派' in (channel or ''):
+            return round(max(total_vol, M * 12))
+        return round(max(total_actual, total_vol))
+    # 无历史匹配：回退实际尺寸
+    actual = num(row.get('weight'))
+    vol = num(row.get('length')) * num(row.get('width')) * num(row.get('height')) / 6000.0
+    return round(max(actual * M, vol * M))
+
+
+def build_rows(orders, ref_rows, warehouse_prices):
+    """Build bill rows from 订单列表 + 内部拣货数据参考值。
+
+    单价取参考值「应收单价」；重量复刻「计费重」公式；参考值中缺该 SO 时回退订单自身
+    （重量=订单收费重，单价按仓库代码匹配，匹配不到记 0）。
+    """
 
     def to_num(v, default=0):
         """Safely convert Excel value to float"""
@@ -152,16 +277,34 @@ def build_rows(orders, picks, prices):
         except (ValueError, TypeError):
             return float(default)
 
-    def to_int(v, default=0):
-        return int(to_num(v, default))
+    def lookup_wh_price(wh_code):
+        """仓库代码 → 应收单价（支持截断前缀/前缀匹配回退）。"""
+        wh_code = wh_code or ''
+        if wh_code in warehouse_prices and warehouse_prices[wh_code] is not None:
+            return warehouse_prices[wh_code]
+        prefix = wh_code.split('-')[0]
+        if prefix in warehouse_prices and warehouse_prices[prefix] is not None:
+            return warehouse_prices[prefix]
+        for key in warehouse_prices:
+            if wh_code.startswith(key):
+                return warehouse_prices[key]
+        return 0
 
-    def clean_wh(code):
-        """清理「仓库代码」列：截取第一个 - 之前（兼容 Amazon 等后缀）"""
-        return code.split('-')[0] if code else (code or '')
+    def order_wh(o):
+        """订单仓库代码：优先「仓库代码」列（截 - 前），为空回退「收件人」列
+        （- 后为 Amazon 才截 - 前，否则保留完整），与旧流程一致。"""
+        wh_raw = str(o.get('仓库代码', '') or '').strip()
+        if wh_raw:
+            return wh_raw.split('-')[0]
+        recv = str(o.get('收件人', '') or '').strip()
+        if recv:
+            return recv.split('-')[0] if recv.split('-')[-1] == 'Amazon' else recv
+        return ''
 
     all_rows = []
 
-    for so, o in sorted(orders.items()):
+    for so_raw, o in sorted(orders.items()):
+        so = str(so_raw).strip()
         service = o['服务']
         volumetric_mode = service in VOLUMETRIC_SERVICES
         # 日期优先：创建日期/下单时间 → 发货日期 → 工作日期；字符串格式也解析（不要求 Excel 日期类型）
@@ -170,42 +313,30 @@ def build_rows(orders, picks, prices):
                     or parse_order_date(o.get('发货日期'))
                     or parse_order_date(o.get('工作日期'))
                     or '')
-        # 仓库代码匹配：优先「仓库代码」列（截取第一个 - 之前）；
-        # 为空时回退「收件人」——仅当 - 后为 Amazon 才截取 - 前，否则保留完整
-        wh_raw = str(o.get('仓库代码', '') or '').strip()
-        if wh_raw:
-            wh_code = clean_wh(wh_raw)
-        else:
-            recv = str(o.get('收件人', '') or '').strip()
-            if recv and recv.split('-')[-1] == 'Amazon':
-                wh_code = recv.split('-')[0]
-            else:
-                wh_code = recv
         total_weight_order = to_num(o.get('收费重', 0))
         fba_ext = o['扩展单号'].split(',') if o['扩展单号'] else []
-        so_picks = pick_groups.get(so, {})
+        so_rows = ref_rows.get(so)
 
-        if so_picks:
+        if so_rows:
             fba_rows = []
-            for fba, rows in so_picks.items():
-                if volumetric_mode:
-                    # 特殊服务：单箱取 max(材积重, 实际重量) 向上取整，再按 FBA 合计
-                    total_w = 0.0
-                    for r in rows:
-                        actual_w = to_num(r[6])   # 实际重量
-                        vol_w = to_num(r[7])      # 材积重
-                        if vol_w <= 0:            # 兜底：材积重缺失时按 长×宽×高/6000 现算
-                            vol_w = to_num(r[3]) * to_num(r[4]) * to_num(r[5]) / 6000.0
-                        total_w += math.ceil(max(actual_w, vol_w))
-                else:
-                    total_w = sum(to_num(r[8]) for r in rows)
+            for ref in so_rows:
+                wh_code_ref = ref['wh'] or order_wh(o)
+                # 应收单价缺失时回退仓库匹配单价（参考值中 E 空 = 报价单无该仓库）
+                e_price = ref['e_price']
+                if e_price in (None, ''):
+                    e_price = lookup_wh_price(wh_code_ref)
                 fba_rows.append({
-                    'fba': fba,
-                    'boxes': len(rows),
-                    'length': to_num(rows[0][5]),
-                    'width': to_num(rows[0][4]),
-                    'height': to_num(rows[0][3]),
-                    'weight_raw': total_w,
+                    'so': so,
+                    'fba': ref['fba'],
+                    'date': date_val,
+                    'service': service,
+                    'wh': wh_code_ref,
+                    'boxes': int(to_num(ref['boxes'])),
+                    'length': to_num(ref['length']),
+                    'width': to_num(ref['width']),
+                    'height': to_num(ref['height']),
+                    'weight_raw': compute_ref_weight(ref, service),
+                    'unit_price': to_num(e_price),
                 })
 
             for r in fba_rows:
@@ -225,20 +356,17 @@ def build_rows(orders, picks, prices):
                         item['weight'] += sign * 1
                         remaining -= 1
 
-            for r in fba_rows:
-                p = lookup_price(prices, wh_code)
-                r.update({'so': so, 'service': service, 'date': date_val,
-                          'wh': wh_code, 'unit_price': to_num(p.get('price', 0)) if p else 0})
             all_rows.extend(fba_rows)
         else:
-            p = lookup_price(prices, wh_code)
+            # 参考值中无此 SO：回退订单自身（仓库代码 → 仓库匹配单价，无则 0）
+            wh_code = order_wh(o)
             all_rows.append({
                 'so': so, 'fba': fba_ext[0] if fba_ext else '',
                 'date': date_val, 'service': service, 'wh': wh_code,
-                'boxes': to_int(o.get('件数', 0)),
+                'boxes': int(to_num(o.get('件数', 0))),
                 'length': 0, 'width': 0, 'height': 0,
                 'weight': total_weight_order, 'weight_raw': total_weight_order,
-                'unit_price': to_num(p.get('price', 0)) if p else 0,
+                'unit_price': to_num(lookup_wh_price(wh_code)),
             })
 
     # Filter out rows with zero weight (no actual cargo)
@@ -620,21 +748,21 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
 
 
 def main():
-    if len(sys.argv) < 4:
-        print("用法: python3 gen_bill.py <订单列表.xlsx> <拣货数据.xlsx> <应收价格.xlsx> [输出文件名]")
+    if len(sys.argv) < 3:
+        print("用法: python3 gen_bill.py <订单列表.xlsx> <内部拣货数据参考值.xlsx> [输出文件名]")
         sys.exit(1)
 
     order_path = sys.argv[1]
-    pick_path = sys.argv[2]
-    price_path = sys.argv[3]
+    ref_path = sys.argv[2]
 
     print(f"📂 订单列表: {order_path}")
-    print(f"📂 拣货数据: {pick_path}")
-    print(f"📂 应收价格: {price_path}")
+    print(f"📂 内部拣货数据参考值: {ref_path}")
 
     # Load
-    orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
-    print(f"✅ 订单: {len(orders)} 条, 拣货: {len(picks)} 条, 价格: {len(prices)} 条")
+    orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(order_path, ref_path)
+    n_so = len(orders)
+    n_ref = sum(len(v) for v in ref_rows.values())
+    print(f"✅ 订单: {n_so} 条, 参考值行: {n_ref} 行, 仓库单价: {len(warehouse_prices)} 个")
     print(f"📋 报关组: 在账单内按 (走货渠道, SO) 判定")
 
     # Compute date range from orders
@@ -664,7 +792,7 @@ def main():
         title_str = "至：广州拓锐科技有限公司"
 
     # Build rows
-    rows = build_rows(orders, picks, prices)
+    rows = build_rows(orders, ref_rows, warehouse_prices)
 
     # Sort
     rows = sort_rows(rows, declaration_groups=declaration_groups)

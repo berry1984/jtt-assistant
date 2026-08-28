@@ -3,7 +3,7 @@
 JTT电商AI助手 - Web应用
 
 功能：
-  1. TR账单自动生成 - 上传订单列表+拣货数据+应收价格，生成标准格式账单
+  1. TR账单自动生成 - 上传订单列表+内部拣货数据参考值，生成标准格式账单
   2. TR发票转换 - 上传TR发票，转换为天图/航乐等供应商模板
 
 用法：
@@ -166,24 +166,21 @@ def invoice_page():
 @app.route('/generate', methods=['POST'])
 def generate():
     order_file = request.files.get('order_file')
-    pick_file = request.files.get('pick_file')
-    price_file = request.files.get('price_file')
+    ref_file = request.files.get('ref_file')
 
-    if not all([order_file, pick_file, price_file]):
-        flash('请上传三个文件：订单列表、拣货数据、应收价格')
+    if not all([order_file, ref_file]):
+        flash('请上传两个文件：订单列表、内部拣货数据参考值')
         return redirect('/bill')
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
     try:
         order_path = os.path.join(tmp_dir, 'order.xlsx')
-        pick_path = os.path.join(tmp_dir, 'pick.xlsx')
-        price_path = os.path.join(tmp_dir, 'price.xlsx')
+        ref_path = os.path.join(tmp_dir, 'ref.xlsx')
         order_file.save(order_path)
-        pick_file.save(pick_path)
-        price_file.save(price_path)
+        ref_file.save(ref_path)
 
-        orders, picks, prices, price_rows_raw, declaration_groups = load_data(order_path, pick_path, price_path)
-        rows = build_rows(orders, picks, prices)
+        orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(order_path, ref_path)
+        rows = build_rows(orders, ref_rows, warehouse_prices)
         rows = sort_rows(rows, declaration_groups=declaration_groups)
         date_serials = []
         for o in orders.values():
