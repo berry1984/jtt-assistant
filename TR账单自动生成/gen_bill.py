@@ -743,6 +743,10 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
                 except:
                     pass
 
+    # 导出默认普通视图（模板的账单/报价表 sheet 为分页预览模式）
+    for _ws in wb.worksheets:
+        _ws.sheet_view.view = 'normal'
+
     wb.save(output_path)
     return True
 

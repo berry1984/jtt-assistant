@@ -451,6 +451,7 @@ def picking_export():
     """
     新规则（2026-06-10）：
     上传 发票 + 系统导出拣货数据 → 匹配箱规历史数据库 → 输出内部拣货数据参考值
+    可选上传 JTT每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价（E列），回退报价表
     """
     sys.path.insert(0, PICKING_DIR)
 
@@ -458,6 +459,7 @@ def picking_export():
     system_file = request.files.get('picking_system')
     history_file = request.files.get('picking_history')
     quotation_file = request.files.get('picking_quotation')
+    weekly_file = request.files.get('picking_weekly')
 
     if not invoice_files or all(f.filename == '' for f in invoice_files):
         flash('请上传至少一份发票文件')
@@ -507,11 +509,18 @@ def picking_export():
                 flash(f'服务器缺少报价单: {quotation_path}')
                 return redirect('/picking')
 
+        # JTT每周渠道报价表：可选，上传了才用（按 渠道+仓点+计费重 匹配应收单价）
+        weekly_path = None
+        if weekly_file and weekly_file.filename:
+            weekly_path = os.path.join(tmp_dir, 'weekly.xlsx')
+            weekly_file.save(weekly_path)
+
         output_path = os.path.join(tmp_dir, 'temp_output.xlsx')
 
         result, total_boxes = generate_picking_output_multi(invoice_paths, system_path, output_path,
                                                              history_file=history_path,
-                                                             quotation_file=quotation_path)
+                                                             quotation_file=quotation_path,
+                                                             weekly_quotation_file=weekly_path)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date

@@ -338,8 +338,9 @@
       <strong>📎 规则：</strong>
       ① 发票货箱编号 → FBA ID → 匹配系统导出运单号(SO号)<br>
       ② 品名+重量尺寸 → 匹配箱规历史数据库 → 取标准箱规参考值<br>
-      ③ 从报价表自动填充应收单价/应付单价/供应商渠道<br>
-      ④ 自动填充公式列(材积重/周长差异/总实重/计费重等)
+      ③ 传了每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价(E列)，匹配不到回退报价表<br>
+      ④ 从报价表自动填充应付单价/供应商渠道等识别信息<br>
+      ⑤ 自动填充公式列(材积重/周长差异/总实重/计费重等)
     </div>
 
     <form method="post" action="/picking_export" enctype="multipart/form-data" id="pickingForm">
@@ -370,6 +371,16 @@
                  onchange="updateLabel(this, 'pw4')">
           <div class="icon">💰</div>
           <div class="hint">如需更新报价单，上传新文件</div>
+          <div class="filename"></div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>JTT每周渠道报价表 <small>(.xlsx，可选，如「JTT物流每周报价单（26年8月第4周）…」，按 渠道+仓点+计费重 匹配应收单价)</small></label>
+        <div class="file-input-wrapper" id="pw5">
+          <input type="file" name="picking_weekly" accept=".xlsx"
+                 onchange="updateLabel(this, 'pw5')">
+          <div class="icon">📈</div>
+          <div class="hint">上传每周渠道报价表，自动匹配应收单价</div>
           <div class="filename"></div>
         </div>
       </div>

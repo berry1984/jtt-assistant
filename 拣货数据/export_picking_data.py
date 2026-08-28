@@ -26,6 +26,8 @@ import os
 import re
 import sys
 
+import weekly_quotation as wq
+
 # ── 配置 ──
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(DATA_DIR, "箱规历史数据库.xlsx")
@@ -368,9 +370,28 @@ def parse_invoice_merge(invoice_files):
 
 # ── 输出生成 ──
 
+def _apply_weekly_price(out, weekly_entries):
+    """按 渠道+仓点+计费重 从每周报价表匹配应收单价，匹配到则覆盖 out['e_price']。
+
+    渠道取 客户渠道(jtt_ch) 或发票服务；计费重用参考尺寸复刻模板 AD 列公式。
+    返回是否匹配成功。
+    """
+    if not weekly_entries:
+        return False
+    channel = out.get('jtt_ch') or out.get('service') or ''
+    cw = wq.compute_chargeable_weight(out, channel)
+    if cw is None:
+        return False
+    wp, _mch, _mpat = wq.find_weekly_price(weekly_entries, channel, out.get('warehouse', ''), cw)
+    if wp is None:
+        return False
+    out['e_price'] = wp
+    return True
+
+
 def generate_picking_output(invoice_file, system_file, output_path,
                               history_file=None, template_file=None,
-                              quotation_file=None):
+                              quotation_file=None, weekly_quotation_file=None):
     """核心入口：生成内部拣货数据参考值"""
     if history_file is None:
         history_file = HISTORY_FILE
@@ -384,6 +405,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
     prefix_to_so = parse_system_export(system_file)
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
+    weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -392,10 +414,13 @@ def generate_picking_output(invoice_file, system_file, output_path,
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
     print(f"  💰 报价单: {len(quotation_data)} 条")
+    if weekly_entries:
+        print(f"  💹 每周报价表: {len(weekly_entries)} 条（按 渠道+仓点+计费重 匹配应收单价）")
 
     # ── 构建输出行数据 ──
     output_rows = []
     missing_history = []  # 记录无历史匹配的行
+    weekly_matched = 0
     for row in data_rows:
         box_no = row['box_no']
         fba_id = extract_order_id(box_no)
@@ -442,6 +467,8 @@ def generate_picking_output(invoice_file, system_file, output_path,
             'ref_wid': hm['rwid'] if hm else None,
             'ref_h': hm['rh'] if hm else None,
         }
+        if _apply_weekly_price(out, weekly_entries):
+            weekly_matched += 1
         output_rows.append(out)
         if hm is None:
             missing_history.append(out)
@@ -449,6 +476,8 @@ def generate_picking_output(invoice_file, system_file, output_path,
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
+    if weekly_entries:
+        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行")
 
     # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
     output_rows = merge_duplicate_picking_rows(output_rows)
@@ -633,7 +662,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
 
 def generate_picking_output_multi(invoice_files, system_file, output_path,
                                    history_file=None, template_file=None,
-                                   quotation_file=None):
+                                   quotation_file=None, weekly_quotation_file=None):
     """支持多份发票合并输出一份拣货数据
 
     参数:
@@ -643,6 +672,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         history_file: 箱规历史数据库路径（可选）
         template_file: 模板文件路径（可选）
         quotation_file: 报价表文件路径（可选）
+        weekly_quotation_file: JTT每周渠道报价表路径（可选，提供则按 渠道+仓点+计费重
+            匹配每周报价并覆盖 E列应收单价，匹配不到回退报价表）
     返回:
         (output_path, total_boxes)
     """
@@ -658,6 +689,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     prefix_to_so = parse_system_export(system_file)
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
+    weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -666,10 +698,13 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
     print(f"  💰 报价单: {len(quotation_data)} 条")
+    if weekly_entries:
+        print(f"  💹 每周报价表: {len(weekly_entries)} 条（按 渠道+仓点+计费重 匹配应收单价）")
 
     # ── 构建输出行数据 ──
     output_rows = []
     missing_history = []
+    weekly_matched = 0
     for row in data_rows:
         box_no = row['box_no']
         fba_id = extract_order_id(box_no)
@@ -712,6 +747,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
             'ref_wid': hm['rwid'] if hm else None,
             'ref_h': hm['rh'] if hm else None,
         }
+        if _apply_weekly_price(out, weekly_entries):
+            weekly_matched += 1
         output_rows.append(out)
         if hm is None:
             missing_history.append(out)
@@ -719,6 +756,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
+    if weekly_entries:
+        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行")
 
     # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
     output_rows = merge_duplicate_picking_rows(output_rows)
