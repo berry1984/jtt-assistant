@@ -40,6 +40,23 @@
   }
   .tab-btn .badge { display: block; margin-top: 3px; font-size: 11px; font-weight: 400; opacity: .72; }
 
+  /* ── 子 Tab 导航（客户账单 / 报价模块 分组） ── */
+  .sub-tabs {
+    max-width: 920px; margin: 0 auto;
+    display: flex; gap: 8px; padding: 12px 0 0;
+  }
+  .sub-tab-btn {
+    padding: 9px 20px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: .2s;
+    background: #e8eaf0; color: #666;
+    border-radius: 10px; text-align: center;
+  }
+  .sub-tab-btn:hover { background: #ddd; color: #333; }
+  .sub-tab-btn.active {
+    background: #fff; color: #4f46e5;
+    box-shadow: 0 0 0 2px #4f46e5;
+  }
+
   /* ── 内容区 ── */
   .container {
     max-width: 920px; margin: 0 auto;
@@ -123,48 +140,64 @@
   </div>
 </div>
 
-<!-- Tab 导航 -->
+{% set top_active = active_tab %}
+{% set sub_active = '' %}
+{% if active_tab == 'bill' or active_tab == 'sr' %}
+  {% set top_active = 'billing' %}
+  {% set sub_active = active_tab %}
+{% elif active_tab == 'price_query' or active_tab == 'ym_cost' %}
+  {% set top_active = 'pricing' %}
+  {% set sub_active = active_tab %}
+{% endif %}
+
+<!-- Tab 导航（发票转换 - 拣货数据 - 投保拆分 - 客户账单 - 报价模块 - 提单保函） -->
 <div class="tabs">
-  <button class="tab-btn {% if active_tab == 'bill' %}active{% endif %}"
-          onclick="switchTab('bill')">
-    📋 TR账单
-    <span class="badge">3个Excel</span>
-  </button>
-  <button class="tab-btn {% if active_tab == 'sr' %}active{% endif %}"
-          onclick="switchTab('sr')">
-    📊 思锐账单
-    <span class="badge">2个Excel</span>
-  </button>
-  <button class="tab-btn {% if active_tab == 'invoice' %}active{% endif %}"
-          onclick="switchTab('invoice')">
+  <button class="tab-btn {% if top_active == 'invoice' %}active{% endif %}"
+          data-tab="invoice" onclick="switchTab('invoice')">
     📄 发票转换
     <span class="badge">TR→天图/航乐/美琦</span>
   </button>
-  <button class="tab-btn {% if active_tab == 'picking' %}active{% endif %}"
-          onclick="switchTab('picking')">
+  <button class="tab-btn {% if top_active == 'picking' %}active{% endif %}"
+          data-tab="picking" onclick="switchTab('picking')">
     📦 拣货数据
     <span class="badge">发票+系统导出</span>
   </button>
-  <button class="tab-btn {% if active_tab == 'insurance' %}active{% endif %}"
-          onclick="switchTab('insurance')">
+  <button class="tab-btn {% if top_active == 'insurance' %}active{% endif %}"
+          data-tab="insurance" onclick="switchTab('insurance')">
     🛡️ 投保拆分
     <span class="badge">按RMB拆5区间</span>
   </button>
-  <button class="tab-btn {% if active_tab == 'bl_docs' %}active{% endif %}"
-          onclick="switchTab('bl_docs')">
+  <button class="tab-btn {% if top_active == 'billing' %}active{% endif %}"
+          data-tab="billing" onclick="switchTab('billing')">
+    🗂️ 客户账单
+    <span class="badge">TR / 思锐</span>
+  </button>
+  <button class="tab-btn {% if top_active == 'pricing' %}active{% endif %}"
+          data-tab="pricing" onclick="switchTab('pricing')">
+    💰 报价模块
+    <span class="badge">查询 / 英美</span>
+  </button>
+  <button class="tab-btn {% if top_active == 'bl_docs' %}active{% endif %}"
+          data-tab="bl_docs" onclick="switchTab('bl_docs')">
     📜 提单保函
     <span class="badge">退税资料→PDF</span>
   </button>
-  <button class="tab-btn {% if active_tab == 'price_query' %}active{% endif %}"
-          onclick="switchTab('price_query')">
-    💰 报价查询
-    <span class="badge">供应商比价</span>
-  </button>
-  <button class="tab-btn {% if active_tab == 'ym_cost' %}active{% endif %}"
-          onclick="location.href='/ym_cost'">
-    📈 英美成本
-    <span class="badge">逐行匹配</span>
-  </button>
+</div>
+
+<!-- 子 Tab：客户账单（TR账单 / 思锐账单） -->
+<div class="sub-tabs" id="sub-billing" style="{% if top_active == 'billing' %}display:flex;{% else %}display:none;{% endif %}">
+  <button class="sub-tab-btn {% if sub_active == 'bill' %}active{% endif %}"
+          data-parent="billing" data-sub="bill" onclick="switchSubTab('billing','bill')">📋 TR账单</button>
+  <button class="sub-tab-btn {% if sub_active == 'sr' %}active{% endif %}"
+          data-parent="billing" data-sub="sr" onclick="switchSubTab('billing','sr')">📊 思锐账单</button>
+</div>
+
+<!-- 子 Tab：报价模块（报价查询 / 英美成本匹配） -->
+<div class="sub-tabs" id="sub-pricing" style="{% if top_active == 'pricing' %}display:flex;{% else %}display:none;{% endif %}">
+  <button class="sub-tab-btn {% if sub_active == 'price_query' %}active{% endif %}"
+          data-parent="pricing" data-sub="price_query" onclick="switchSubTab('pricing','price_query')">🔍 报价查询</button>
+  <button class="sub-tab-btn {% if sub_active == 'ym_cost' %}active{% endif %}"
+          data-parent="pricing" data-sub="ym_cost" onclick="switchSubTab('pricing','ym_cost')">📈 英美成本匹配</button>
 </div>
 
 <div class="container">
@@ -289,13 +322,13 @@
         <div class="format-desc" id="formatDesc"></div>
       </div>
 
-      <div class="form-group" id="orderListGroup">
-        <label>订单列表 Excel <small>(.xlsx，可选，按地址库编码回填客户订单号为运单号)</small></label>
+      <div class="form-group" id="orderListGroup" style="display:none;">
+        <label>订单列表 Excel <small>(.xlsx，可选，按对应订单号回填运单号 + 抓取供应商服务填服务/渠道)</small></label>
         <div class="file-input-wrapper" id="iw2">
           <input type="file" name="order_list" accept=".xlsx"
                  onchange="updateLabel(this, 'iw2')">
           <div class="icon">📋</div>
-          <div class="hint">上传订单列表（含「地址库编码」与「运单号」列），天图/航乐/美琦 通用</div>
+          <div class="hint">上传订单列表（含「运单号」「仓库代码」「供应商服务」列）</div>
           <div class="filename"></div>
         </div>
       </div>
@@ -485,19 +518,67 @@
     <div id="pqResults"></div>
   </div>
 
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- Tab: 英美成本匹配（独立页 /ym_cost 以 iframe 嵌入） -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="tab-content {% if active_tab == 'ym_cost' %}active{% endif %}" id="tab-ym_cost">
+    <div class="info-box">
+      <strong>📌 英美成本报价匹配</strong>（英美跨境专版 v2.0）· 上传 JTT 输出模板 + 渠道匹配表 + 4 份供应商公布价文件，逐行匹配仓点/邮编的供应商成本与预估利润
+    </div>
+    <iframe src="/ym_cost?embed=1" title="英美成本匹配"
+            style="width:100%;height:850px;border:1px solid #e0e7ff;border-radius:10px;background:#fff;"></iframe>
+  </div>
+
   <div class="footer">JTT电商AI助手 v1.0</div>
 </div>
 
 <script>
-// ── Tab 切换 ──
-function switchTab(name) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+// ── Tab 切换（两级导航：顶级 → 子 Tab） ──
+const GROUP_MAP = {
+  billing: { subs: ['bill', 'sr'], def: 'bill' },
+  pricing: { subs: ['price_query', 'ym_cost'], def: 'price_query' },
+};
+const TAB_URLS = {
+  invoice: '/invoice', picking: '/picking', insurance: '/insurance',
+  bl_docs: '/bl_docs', bill: '/bill', sr: '/sr',
+  price_query: '/price_query', ym_cost: '/ym_cost',
+};
+
+function activateContent(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  document.querySelector(`.tab-btn[onclick*="'${name}'"]`).classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
-  // URL 更新
-  const urls = {bill: '/', sr: '/sr', invoice: '/invoice', picking: '/picking', insurance: '/insurance', bl_docs: '/bl_docs', price_query: '/price_query'};
-  history.replaceState(null, '', urls[name] || '/');
+  history.replaceState(null, '', TAB_URLS[name] || '/');
+}
+
+function switchTab(name) {
+  // 清除所有选中态
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('.sub-tabs').forEach(s => s.style.display = 'none');
+
+  // 激活顶级 tab
+  const btn = document.querySelector('.tab-btn[data-tab="' + name + '"]');
+  if (btn) btn.classList.add('active');
+
+  if (GROUP_MAP[name]) {
+    // 分组 tab：显示子栏并激活默认子 tab
+    switchSubTab(name, GROUP_MAP[name].def);
+  } else {
+    // 单页 tab
+    activateContent(name);
+  }
+}
+
+function switchSubTab(parent, sub) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+  const parentBtn = document.querySelector('.tab-btn[data-tab="' + parent + '"]');
+  if (parentBtn) parentBtn.classList.add('active');
+  const subBtn = document.querySelector('.sub-tab-btn[data-parent="' + parent + '"][data-sub="' + sub + '"]');
+  if (subBtn) subBtn.classList.add('active');
+  document.getElementById('sub-' + parent).style.display = 'flex';
+  activateContent(sub);
 }
 
 // ── 文件选择 ──
@@ -532,6 +613,9 @@ const DESCS = {
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
   document.getElementById('formatDesc').textContent = DESCS[sel.value] || '';
+  // 订单列表上传区：所有目标（天图/航乐/美琦）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
+  const og = document.getElementById('orderListGroup');
+  if (og) og.style.display = '';
 }
 updateDesc();
 

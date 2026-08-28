@@ -392,7 +392,8 @@ def convert_to_tiantu(tr, output_path, image_url_base=None, order_list_path=None
     image_url_base: 如果提供，则为 IMAGE 公式的 URL 前缀（如 http://host/temp/xxx），
                     实现 Excel 365 "放置在单元格中"。
                     如果不提供，回退到文本链接。
-    order_list_path: 如果提供，按地址库编码查运单号回填 B14 客户订单号（美琦同名规则）。
+    order_list_path: 如果提供，按对应订单号匹配订单列表——运单号回填 B14 客户订单号，
+                     并抓取「供应商服务」回填 B1 服务（美琦同名规则）。
     """
     print(f'📄 天图模板: {TIANTU_TEMPLATE}')
     if not os.path.exists(TIANTU_TEMPLATE):
@@ -448,8 +449,9 @@ def convert_to_tiantu(tr, output_path, image_url_base=None, order_list_path=None
 
     # ── 头部 Row 1-28 ──
 
-    # B1: 服务 = TR 服务字段，同时确保该服务在 Sheet2 下拉列表中
-    service_name = tr.get('服务', '')
+    # B1: 服务 = 订单列表对应订单号的「供应商服务」（渠道抓取），未命中回退 TR 服务字段
+    # 同时确保该服务在 Sheet2 下拉列表中
+    service_name = _match_supplier_service(tr, order_list_path) or tr.get('服务', '')
     if service_name:
         # 检查 Sheet2 中是否已有该服务，没有则追加
         ws2 = wb['Sheet2']
@@ -705,8 +707,9 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
     保留模板的所有格式、合并单元格、渠道参考列表等。
 
     image_url_base: 如果提供，则嵌入 IMAGE() 公式实现"放置在单元格中"图片效果。
-    order_list_path: 如果提供，按地址库编码查运单号（美琦同名规则）。
-                     航乐模板正文无客户订单号字段，匹配结果用于输出文件名（app.py 拼装）。
+    order_list_path: 如果提供，按对应订单号匹配订单列表——运单号用于输出文件名（app.py 拼装），
+                     并抓取「供应商服务」回填 I7 渠道（美琦同名规则）。
+                     航乐模板正文无客户订单号字段。
     """
     # ── 选择模板 ──
     if region == 'uk':
@@ -812,8 +815,8 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
     ws['B9'] = tr.get('EORI号', '')
     # B10:H10 = VAT注册地址
     ws['B10'] = tr.get('VAT注册地址', '')
-    # I7:K10 (merged) = 渠道（服务名）
-    ws['I7'] = tr.get('服务', '')
+    # I7:K10 (merged) = 渠道（服务名）—— 渠道抓取：订单列表对应订单号「供应商服务」优先，未命中回退 TR 服务
+    ws['I7'] = _match_supplier_service(tr, order_list_path) or tr.get('服务', '')
     # L7:L10 (merged) = 是否包税
     ws['L7'] = tr.get('交税方式', '')
     # M7:M10 (merged) = 物品属性
@@ -1066,24 +1069,120 @@ def _load_order_list_map(order_list_path):
     return mapping
 
 
-def _match_waybill(tr, order_list_path):
-    """美琦运单号匹配规则：从订单列表按地址库编码查运单号。
+def _load_order_rows(order_list_path):
+    """从订单列表 excel 解析全部数据行，返回 [{'运单号','仓库代码','供应商服务'}, ...]。
 
-    返回匹配到的运单号；未提供订单列表/编码为空/未命中 返回 None。
-    美琦/天图/航乐 三家共用，客户订单号在各自模板中的落点由调用方决定。
+    自动定位表头行（含「运单号」）；未提供「供应商服务」列时该项为空串。
+    """
+    wb = load_workbook(order_list_path, data_only=True)
+    ws = wb.worksheets[0]
+
+    header_row = 1
+    for r in range(1, min(ws.max_row, 20) + 1):
+        row_vals = [str(ws.cell(row=r, column=c).value or '').strip()
+                    for c in range(1, min(ws.max_column, 60) + 1)]
+        if any('运单号' in v for v in row_vals):
+            header_row = r
+            break
+
+    header_vals = [str(ws.cell(row=header_row, column=c).value or '').strip()
+                   for c in range(1, min(ws.max_column, 60) + 1)]
+
+    def find_col(keywords):
+        for idx, v in enumerate(header_vals):
+            for kw in keywords:
+                if kw in v:
+                    return idx + 1  # 1-based 列号
+        return None
+
+    waybill_col = find_col(['运单号'])
+    code_col = find_col(['地址库编码', '仓库代码', '仓库'])
+    service_col = find_col(['供应商服务'])
+    if not waybill_col:
+        print(f'   ⚠️ 订单列表未找到「运单号」列: {os.path.basename(order_list_path)}')
+        return []
+
+    rows = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        waybill = ws.cell(row=r, column=waybill_col).value
+        if waybill is None or not str(waybill).strip():
+            continue
+        rows.append({
+            '运单号': str(waybill).strip(),
+            '仓库代码': str(ws.cell(row=r, column=code_col).value or '').strip() if code_col else '',
+            '供应商服务': str(ws.cell(row=r, column=service_col).value or '').strip() if service_col else '',
+        })
+    print(f'   📋 订单列表: {os.path.basename(order_list_path)}，{len(rows)} 行数据')
+    return rows
+
+
+def _match_order_row(tr, order_list_path):
+    """从订单列表匹配 TR 发票对应的行。
+
+    匹配优先级：
+      1. 订单号匹配：TR「客户订单号」== 订单列表「运单号」
+      2. 仓库代码匹配：TR「地址库编码」（为空取「收件人姓名」）== 订单列表「仓库代码」
+    返回命中的行 dict（含「运单号」「供应商服务」）；未命中返回 None。
+    美琦/天图/航乐 三家共用。
     """
     if not order_list_path:
         return None
-    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
-    if not wh_code:
+    rows = _load_order_rows(order_list_path)
+    if not rows:
         return None
-    ol_map = _load_order_list_map(order_list_path)
-    waybill = ol_map.get(wh_code)
+
+    # 1. 订单号（运单号）匹配
+    order_no = (tr.get('客户订单号', '') or '').strip()
+    if order_no:
+        for row in rows:
+            if row.get('运单号') == order_no:
+                return row
+
+    # 2. 仓库代码（地址库编码）匹配
+    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+    if wh_code:
+        for row in rows:
+            if row.get('仓库代码') == wh_code:
+                return row
+
+    return None
+
+
+def _match_waybill(tr, order_list_path):
+    """美琦运单号匹配规则：从订单列表按对应订单号查运单号。
+
+    返回匹配到的运单号；未提供订单列表/未命中 返回 None。
+    美琦/天图/航乐 三家共用，客户订单号在各自模板中的落点由调用方决定。
+    """
+    row = _match_order_row(tr, order_list_path)
+    if not row:
+        wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+        if wh_code:
+            print(f'   ⚠️ 订单列表未找到匹配 {wh_code} 的行，客户订单号保留源值')
+        return None
+    waybill = row.get('运单号') or None
     if waybill:
-        print(f'   📋 订单列表命中: {wh_code} → 运单号 {waybill}')
-    else:
-        print(f'   ⚠️ 订单列表未找到地址库编码 {wh_code}，客户订单号保留源值')
+        print(f'   📋 订单列表命中: → 运单号 {waybill}')
     return waybill
+
+
+def _match_supplier_service(tr, order_list_path):
+    """渠道抓取规则：目标发票的「服务/渠道」从订单列表对应订单号抓取「供应商服务」。
+
+    返回匹配到的供应商服务；未提供订单列表/未命中/该列为空 返回 None，
+    调用方回退到 TR 源「服务」字段。
+    """
+    if not order_list_path:
+        return None
+    row = _match_order_row(tr, order_list_path)
+    if not row:
+        return None
+    svc = row.get('供应商服务', '') or ''
+    if svc:
+        print(f'   📋 供应商服务命中: {svc}')
+        return svc
+    print(f'   ⚠️ 订单列表命中行无「供应商服务」列值，服务保留源值')
+    return None
 
 
 def convert_to_meiqi(tr, output_path, order_list_path=None):
@@ -1145,8 +1244,8 @@ def convert_to_meiqi(tr, output_path, order_list_path=None):
     # B2: 客户参考号 = 源客户参考号（无则取客户订单号）
     set_val(2, tr.get('客户参考号', '') or order_no)
 
-    # B3: 服务（渠道映射；未命中保留源名称）
-    service = tr.get('服务', '') or ''
+    # B3: 服务 —— 渠道抓取：订单列表对应订单号「供应商服务」优先，未命中回退 TR 服务（渠道映射；未命中保留源名称）
+    service = _match_supplier_service(tr, order_list_path) or tr.get('服务', '') or ''
     meiqi_service = MEIQI_CHANNEL_MAP.get(service, service)
     set_val(3, meiqi_service)
 

@@ -93,6 +93,12 @@ TARGET_OPTIONS = {
 
 @app.route('/', methods=['GET'])
 def index():
+    # 默认落地到「发票转换」（页面第一栏）
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='invoice')
+
+
+@app.route('/bill', methods=['GET'])
+def bill_page():
     return render_template('index.html', targets=TARGET_OPTIONS, active_tab='bill')
 
 
@@ -153,7 +159,7 @@ def generate():
 
     if not all([order_file, pick_file, price_file]):
         flash('请上传三个文件：订单列表、拣货数据、应收价格')
-        return redirect('/')
+        return redirect('/bill')
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
     try:
@@ -213,7 +219,7 @@ def generate():
 
         if not success or not os.path.exists(output_path):
             flash('生成账单失败，请检查文件内容')
-            return redirect('/')
+            return redirect('/bill')
 
         return send_file(output_path,
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -222,7 +228,7 @@ def generate():
 
     except Exception as e:
         flash(f'处理出错: {str(e)}')
-        return redirect('/')
+        return redirect('/bill')
     finally:
         pass
 
@@ -282,7 +288,7 @@ def invoice_convert():
 
         base_name = os.path.splitext(invoice_file.filename)[0]
 
-        # 订单列表（可选）：所有目标（天图/航乐/美琦）均支持按地址库编码回填客户订单号为运单号。
+        # 订单列表（可选）：所有目标均支持按地址库编码回填客户订单号为运单号
         order_list_path = None
         if order_list_file and order_list_file.filename:
             order_list_path = os.path.join(tmp_dir, 'order_list.xlsx')
@@ -833,7 +839,9 @@ def _get_ym_module():
 
 @app.route('/ym_cost', methods=['GET'])
 def ym_cost_page():
-    return render_template('ym_cost.html', active_tab='ym_cost')
+    # ?embed=1 时隐藏顶栏，供首页「报价模块 → 英美成本匹配」子 Tab 以 iframe 嵌入
+    embed = request.args.get('embed', '0') == '1'
+    return render_template('ym_cost.html', active_tab='ym_cost', embed=embed)
 
 
 @app.route('/api/ym_cost/generate', methods=['POST'])
@@ -930,13 +938,11 @@ if __name__ == '__main__':
     print("=" * 50)
     print("  JTT电商AI助手  — 一站式跨境物流工具")
     print("=" * 50)
-    print(f"  📋 账单生成  → http://localhost:{port}")
-    print(f"  📊 思锐账单  → http://localhost:{port}/sr")
     print(f"  📄 发票转换  → http://localhost:{port}/invoice")
     print(f"  📦 拣货导出  → http://localhost:{port}/picking")
     print(f"  🛡️ 投保拆分  → http://localhost:{port}/insurance")
+    print(f"  🗂️ 客户账单  → http://localhost:{port}/bill  (TR账单) / {port}/sr (思锐账单)")
+    print(f"  💰 报价模块  → http://localhost:{port}/price_query (报价查询) / {port}/ym_cost (英美成本)")
     print(f"  📜 提单保函  → http://localhost:{port}/bl_docs")
-    print(f"  💰 报价查询  → http://localhost:{port}/price_query")
-    print(f"  📈 英美成本  → http://localhost:{port}/ym_cost")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port)
