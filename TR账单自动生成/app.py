@@ -13,6 +13,7 @@ JTT电商AI助手 - Web应用
 
 import os
 import sys
+import json
 import tempfile
 import shutil
 import atexit
@@ -49,8 +50,19 @@ sys.path.insert(0, INSURANCE_DIR)
 # ── 报价查询模块 ──
 # 原指向 PROJECT_DIR/报价工具（bb plan1 下不存在）导致 500: spec not found for module 'price_query'
 # 改为真实项目目录 /Users/admin/报价工具（内含已修复的 supplier_pricing / price_query / cost_analyzer）
+# 该路径仅保留给 英美成本匹配(ym_cost_match) 本地回退；纯供应商报价查询已由 price_supplier.py 自包含
 PRICE_QUERY_DIR = '/Users/admin/报价工具'
 sys.path.insert(0, PRICE_QUERY_DIR)
+
+# ── 报价数据持久化目录（Railway Volume /data，本地开发兜底 price_data/） ──
+STORAGE_DIR = os.environ.get('STORAGE_DIR', '').strip()
+if not STORAGE_DIR:
+    _cand = '/data'
+    if not (os.path.exists(_cand) and os.access(_cand, os.W_OK)):
+        _cand = os.path.join(THIS_DIR, 'price_data')
+    STORAGE_DIR = _cand
+os.environ['STORAGE_DIR'] = STORAGE_DIR
+os.makedirs(os.path.join(STORAGE_DIR, 'suppliers'), exist_ok=True)
 
 def _get_sr_module():
     """延迟导入 gen_sr_bill，避免铁路部署时依赖问题导致整个app崩溃"""
@@ -632,40 +644,9 @@ def generate_bl_docs_route():
 
 
 # ═══════════════════════════════════════════
-#  功能7：报价查询与成本分析（绿色模板列）
+#  功能7：报价查询（固定供应商 + 自定义 + 云端持久化）
 # ═══════════════════════════════════════════
-
-def _get_price_query():
-    """延迟导入/重载 price_query 模块。"""
-    import importlib
-    mod_name = 'price_query'
-    if mod_name in sys.modules:
-        return importlib.reload(sys.modules[mod_name])
-    sys.path.insert(0, PRICE_QUERY_DIR)
-    return importlib.import_module(mod_name)
-
-
-def _get_full_template_path():
-    """获取完整模板路径（优先用最新的上传文件）。"""
-    import glob as gb
-    tmpl_dir = os.path.join(PRICE_QUERY_DIR, '模版及供应商报价文件')
-    patterns = ['*JTT*报价表*', '*JTT*模板*', '*成本报价*模板*']
-    candidates = []
-    for p in patterns:
-        for f in gb.glob(os.path.join(tmpl_dir, p)):
-            if f.endswith(('.xlsx', '.xls')):
-                candidates.append((os.path.getmtime(f), f))
-    if candidates:
-        candidates.sort(reverse=True)
-        return candidates[0][1]
-    return os.path.join(tmpl_dir, 'JTT物流每周成本报价表模板xlsx.xlsx')
-
-
-def _get_supplier_dir():
-    """获取供应商目录（优先用真实文件目录）。"""
-    real_dir = os.path.join(PRICE_QUERY_DIR, '模版及供应商报价文件')
-    simp_dir = os.path.join(PRICE_QUERY_DIR, 'suppliers')
-    return real_dir if os.path.isdir(real_dir) else simp_dir
+from price_supplier import save_upload, add_custom_supplier, delete_slot, list_slots, query
 
 
 @app.route('/price_query', methods=['GET'])
@@ -675,151 +656,65 @@ def price_query_page():
 
 @app.route('/api/price_query', methods=['GET'])
 def price_query_api():
-    """成本分析 API：使用完整模板 + 真实供应商数据。"""
-    force = request.args.get('force', '0') == '1'
+    """供应商报价查询：按 供应商 → 国家 → 渠道 组织，支持按国家/供应商/渠道关键词过滤。"""
     keyword = request.args.get('keyword', '').strip()
     country = request.args.get('country', '').strip()
     supplier = request.args.get('supplier', '').strip()
-
     try:
-        pq = _get_price_query()
-        tmpl = _get_full_template_path()
-        sup_dir = _get_supplier_dir()
-
-        if keyword or country or supplier:
-            data = pq.search_cost_analysis(
-                keyword=keyword,
-                country=country if country else None,
-                supplier=supplier if supplier else None,
-            )
-        else:
-            data = pq.get_cost_analysis(
-                template_path=tmpl,
-                supplier_dir=sup_dir,
-                force_reload=force,
-            )
-
-        import json
+        data = query(keyword=keyword, country=country, supplier=supplier)
         return app.response_class(
             response=json.dumps(data, ensure_ascii=False),
             mimetype='application/json; charset=utf-8'
         )
-
     except Exception as e:
         import traceback
         traceback.print_exc()
         return {"error": str(e)}
 
 
-@app.route('/api/price_query/upload_template', methods=['POST'])
-def upload_template():
-    """上传更新 JTT 成本报价模板。"""
-    file = request.files.get('template_file')
-    if not file or file.filename == '':
-        return {"error": "请选择模板文件"}
-
+@app.route('/api/price_query/slots', methods=['GET'])
+def price_query_slots():
+    """已存报价槽位清单（供应商|国家|源文件名|更新时间|渠道数|自定义标记）。"""
     try:
-        pq = _get_price_query()
-        result = pq.save_uploaded_template(file)
-        return result
+        return {"slots": list_slots()}
     except Exception as e:
         return {"error": str(e)}
 
 
-@app.route('/api/price_query/upload_supplier', methods=['POST'])
-def upload_supplier():
-    """上传更新供应商报价文件。"""
-    file = request.files.get('supplier_file')
+@app.route('/api/price_query/upload', methods=['POST'])
+def price_query_upload():
+    """上传报价文件到 (供应商 × 多国) 槽位，再次上传同槽位即覆盖更新。"""
+    supplier = request.form.get('supplier', '').strip()
+    countries = request.form.getlist('countries')
+    file = request.files.get('file')
     if not file or file.filename == '':
-        return {"error": "请选择供应商报价文件"}
-
-    try:
-        pq = _get_price_query()
-        result = pq.save_uploaded_supplier(file)
-        return result
-    except Exception as e:
-        return {"error": str(e)}
+        return {"error": "请选择报价文件"}
+    return save_upload(supplier, countries, file)
 
 
-# ═══════════════════════════════════════════
-#  功能8：报价匹配导出（上传模板+多供应商→生成Excel）
-# ═══════════════════════════════════════════
+@app.route('/api/price_query/supplier/add', methods=['POST'])
+def price_query_supplier_add():
+    """新增自定义供应商并上传其首个报价文件。"""
+    name = request.form.get('name', '').strip()
+    countries = request.form.getlist('countries')
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        return {"error": "请选择报价文件"}
+    return add_custom_supplier(name, countries, file)
 
-@app.route('/api/price_query/generate', methods=['POST'])
-def price_query_generate():
-    """
-    上传 JTT 模板 + 多份供应商报价文件 → 生成匹配好的成本利润 Excel。
 
-    参数:
-        template_file: JTT 模板 .xlsx（必填）
-        supplier_files: 供应商报价文件列表（可多选）
-
-    返回: 生成的 .xlsx 文件下载
-    """
-    template_file = request.files.get('template_file')
-    supplier_files = request.files.getlist('supplier_files')
-
-    if not template_file or template_file.filename == '':
-        return {"error": "请上传 JTT 模板文件"}, 400
-    if not supplier_files or all(f.filename == '' for f in supplier_files):
-        return {"error": "请上传至少一份供应商报价文件"}, 400
-
-    tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
-    try:
-        # 1. 保存模板
-        tmpl_path = os.path.join(tmp_dir, 'template.xlsx')
-        template_file.save(tmpl_path)
-
-        # 2. 保存供应商文件（保留原文件名以便检测供应商）
-        sup_paths = []
-        for f in supplier_files:
-            if f.filename:
-                orig_name = os.path.splitext(os.path.basename(f.filename))[0]
-                ext = os.path.splitext(f.filename)[1] or '.xlsx'
-                p = os.path.join(tmp_dir, f'{orig_name}{ext}')
-                f.save(p)
-                sup_paths.append(p)
-
-        if not sup_paths:
-            return {"error": "没有有效的供应商文件"}, 400
-
-        # 3. 执行匹配生成
-        pq = _get_price_query()
-        output_path = os.path.join(tmp_dir, '成本分析结果.xlsx')
-
-        # 调用统一的导出函数
-        result = pq.generate_export(
-            template_path=tmpl_path,
-            supplier_paths=sup_paths,
-            output_path=output_path,
-        )
-
-        if "error" in result:
-            return result, 400
-
-        # 4. 返回生成的文件
-        download_name = f"成本利润分析_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        return send_file(
-            output_path,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=download_name,
-        )
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"error": f"生成失败: {str(e)}"}, 500
-    finally:
-        def cleanup():
-            try: shutil.rmtree(tmp_dir)
-            except: pass
-        import atexit as at
-        at.register(cleanup)
+@app.route('/api/price_query/delete', methods=['POST'])
+def price_query_delete():
+    """删除单个 (供应商 × 国家) 槽位。"""
+    supplier = request.form.get('supplier', '').strip()
+    country = request.form.get('country', '').strip()
+    if not supplier or not country:
+        return {"error": "缺少 supplier/country 参数"}
+    return delete_slot(supplier, country)
 
 
 # ═══════════════════════════════════════════
-#  功能9：英美成本报价匹配（英美跨境专版 v2.0）
+#  功能8：英美成本报价匹配（英美跨境专版 v2.0）
 # ═══════════════════════════════════════════
 
 def _get_ym_module():
@@ -942,7 +837,8 @@ if __name__ == '__main__':
     print(f"  📦 拣货导出  → http://localhost:{port}/picking")
     print(f"  🛡️ 投保拆分  → http://localhost:{port}/insurance")
     print(f"  🗂️ 客户账单  → http://localhost:{port}/bill  (TR账单) / {port}/sr (思锐账单)")
-    print(f"  💰 报价模块  → http://localhost:{port}/price_query (报价查询) / {port}/ym_cost (英美成本)")
+    print(f"  💰 报价模块  → http://localhost:{port}/price_query (供应商报价查询) / {port}/ym_cost (英美成本)")
+    print(f"  💾 报价存储  → {STORAGE_DIR}")
     print(f"  📜 提单保函  → http://localhost:{port}/bl_docs")
     print("=" * 50)
     app.run(host='0.0.0.0', port=port)
