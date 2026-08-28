@@ -290,14 +290,36 @@
       </div>
 
       <div class="form-group" id="orderListGroup" style="display:none;">
-        <label>美琦：订单列表 Excel <small>(.xlsx，可选，按地址库编码回填客户订单号为运单号)</small></label>
+        <label>订单列表 Excel <small>(.xlsx，可选，按地址库编码回填客户订单号为运单号；不填则用默认订单列表)</small></label>
         <div class="file-input-wrapper" id="iw2">
           <input type="file" name="order_list" accept=".xlsx"
                  onchange="updateLabel(this, 'iw2')">
           <div class="icon">📋</div>
-          <div class="hint">上传订单列表（含「地址库编码」与「运单号」列）</div>
+          <div class="hint">上传订单列表（含「地址库编码」与「运单号」列），可临时覆盖默认</div>
           <div class="filename"></div>
         </div>
+      </div>
+
+      <div class="form-group" style="border-top:1px dashed #ccc;padding-top:12px;margin-top:6px;">
+        <label>📌 默认订单列表 <small>(设置一次，天图/航乐/美琦 转换自动使用，省去重复上传)</small></label>
+        <form method="post" action="/invoice_set_default_order_list" enctype="multipart/form-data" id="defaultOrderListForm" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <div class="file-input-wrapper" id="iw3" style="flex:1;min-width:200px;">
+            <input type="file" name="default_order_list" accept=".xlsx"
+                   onchange="updateLabel(this, 'iw3')">
+            <div class="icon">📌</div>
+            <div class="hint">上传设为默认订单列表</div>
+            <div class="filename"></div>
+          </div>
+          <button type="submit" class="btn btn-secondary" id="setDefaultBtn">设置默认</button>
+        </form>
+        {% if has_default_order_list %}
+        <div class="hint" style="color:#2e7d32;margin-top:6px;">✔ 默认订单列表已设置，转换时将自动用于匹配运单号</div>
+        <form method="post" action="/invoice_clear_default_order_list" id="clearDefaultForm" style="margin-top:4px;">
+          <button type="submit" class="btn btn-danger btn-sm">清除默认订单列表</button>
+        </form>
+        {% else %}
+        <div class="hint" style="color:#8a8a8a;margin-top:6px;">未设置默认订单列表（可每次转换时单独上传）</div>
+        {% endif %}
       </div>
 
       <button type="submit" class="btn btn-primary" id="invoiceBtn">开始转换</button>
@@ -532,9 +554,9 @@ const DESCS = {
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
   document.getElementById('formatDesc').textContent = DESCS[sel.value] || '';
-  // 仅「美琦」显示订单列表上传区（按地址库编码回填客户订单号）
+  // 订单列表上传区：所有目标（天图/航乐/美琦）均显示（按地址库编码回填客户订单号）
   const og = document.getElementById('orderListGroup');
-  if (og) og.style.display = (sel.value === '美琦') ? '' : 'none';
+  if (og) og.style.display = '';
 }
 updateDesc();
 

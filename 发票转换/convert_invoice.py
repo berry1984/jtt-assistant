@@ -384,7 +384,7 @@ class TRInvoice:
 #  2. 天图 转换
 # ═══════════════════════════════════════════════════════════════
 
-def convert_to_tiantu(tr, output_path, image_url_base=None):
+def convert_to_tiantu(tr, output_path, image_url_base=None, order_list_path=None):
     """
     TR发票 → 天图格式
     规则详见 TR转天图发票_转换规则说明.md
@@ -392,6 +392,7 @@ def convert_to_tiantu(tr, output_path, image_url_base=None):
     image_url_base: 如果提供，则为 IMAGE 公式的 URL 前缀（如 http://host/temp/xxx），
                     实现 Excel 365 "放置在单元格中"。
                     如果不提供，回退到文本链接。
+    order_list_path: 如果提供，按地址库编码查运单号回填 B14 客户订单号（美琦同名规则）。
     """
     print(f'📄 天图模板: {TIANTU_TEMPLATE}')
     if not os.path.exists(TIANTU_TEMPLATE):
@@ -500,8 +501,9 @@ def convert_to_tiantu(tr, output_path, image_url_base=None):
     # B13: 收件人邮箱 = TR B14
     set_cell('B', 13, tr.get('收件人邮箱', ''), font_value)
 
-    # B14: 客户订单号 = TR B1
-    order_no = tr.get('客户订单号', '')
+    # B14: 客户订单号 = TR B1；若提供订单列表，按地址库编码查运单号填入
+    order_no = tr.get('客户订单号', '') or ''
+    order_no = _match_waybill(tr, order_list_path) or order_no
     set_cell('B', 14, order_no, font_value)
 
     # B15: Amazon Reference ID → 留空
@@ -695,7 +697,7 @@ def convert_to_tiantu(tr, output_path, image_url_base=None):
 #  3. 航乐 转换 (通用)
 # ═══════════════════════════════════════════════════════════════
 
-def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
+def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_list_path=None):
     """
     TR发票 → 航乐格式 (UK 或 EU)
 
@@ -703,6 +705,8 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     保留模板的所有格式、合并单元格、渠道参考列表等。
 
     image_url_base: 如果提供，则嵌入 IMAGE() 公式实现"放置在单元格中"图片效果。
+    order_list_path: 如果提供，按地址库编码查运单号（美琦同名规则）。
+                     航乐模板正文无客户订单号字段，匹配结果用于输出文件名（app.py 拼装）。
     """
     # ── 选择模板 ──
     if region == 'uk':
@@ -745,6 +749,9 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None):
     shutil.copy(template_path, output_path)
     wb = load_workbook(output_path)
     ws = wb['Packing list装箱单发票']
+
+    # 按美琦运单号匹配规则匹配运单号（航乐模板正文无客户订单号字段，结果供 app.py 拼文件名用）
+    _match_waybill(tr, order_list_path)
 
     # ── 样式定义（匹配航乐模板样式）──
     thin_side = Side(style='thin')
@@ -1059,6 +1066,26 @@ def _load_order_list_map(order_list_path):
     return mapping
 
 
+def _match_waybill(tr, order_list_path):
+    """美琦运单号匹配规则：从订单列表按地址库编码查运单号。
+
+    返回匹配到的运单号；未提供订单列表/编码为空/未命中 返回 None。
+    美琦/天图/航乐 三家共用，客户订单号在各自模板中的落点由调用方决定。
+    """
+    if not order_list_path:
+        return None
+    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+    if not wh_code:
+        return None
+    ol_map = _load_order_list_map(order_list_path)
+    waybill = ol_map.get(wh_code)
+    if waybill:
+        print(f'   📋 订单列表命中: {wh_code} → 运单号 {waybill}')
+    else:
+        print(f'   ⚠️ 订单列表未找到地址库编码 {wh_code}，客户订单号保留源值')
+    return waybill
+
+
 def convert_to_meiqi(tr, output_path, order_list_path=None):
     """
     TR发票 → 美琦美线发票格式
@@ -1112,14 +1139,7 @@ def convert_to_meiqi(tr, output_path, order_list_path=None):
 
     # B1: 客户订单号 = 源客户订单号；若提供订单列表，按地址库编码查运单号填入
     order_no = tr.get('客户订单号', '') or ''
-    b1_val = order_no
-    if order_list_path:
-        ol_map = _load_order_list_map(order_list_path)
-        if wh_code and wh_code in ol_map:
-            b1_val = ol_map[wh_code]
-            print(f'   📋 订单列表命中: {wh_code} → 运单号 {b1_val}')
-        elif wh_code:
-            print(f'   ⚠️ 订单列表未找到地址库编码 {wh_code}，客户订单号保留源值')
+    b1_val = _match_waybill(tr, order_list_path) or order_no
     set_val(1, b1_val)
 
     # B2: 客户参考号 = 源客户参考号（无则取客户订单号）
@@ -1681,6 +1701,8 @@ def main():
                         help='批量模式的输入目录')
     parser.add_argument('--out-dir', default=os.path.join(SCRIPT_DIR, 'output'),
                         help='批量模式的输出目录 (默认: ./output)')
+    parser.add_argument('--order-list', default=None,
+                        help='订单列表 .xlsx（含「地址库编码」「运单号」列，可选；按地址库编码回填客户订单号为运单号）')
 
     # 用 parse_intermixed_args 支持 `输入 --to 目标 输出` 的位置参数穿插
     args = parser.parse_intermixed_args()
@@ -1723,13 +1745,13 @@ def main():
 
     # 执行转换
     if args.to == '天图':
-        convert_to_tiantu(tr, args.output)
+        convert_to_tiantu(tr, args.output, order_list_path=args.order_list)
     elif args.to == '航乐-uk':
-        convert_to_hangle(tr, args.output, region='uk')
+        convert_to_hangle(tr, args.output, region='uk', order_list_path=args.order_list)
     elif args.to == '航乐-eu':
-        convert_to_hangle(tr, args.output, region='eu')
+        convert_to_hangle(tr, args.output, region='eu', order_list_path=args.order_list)
     elif args.to == '美琦':
-        convert_to_meiqi(tr, args.output)
+        convert_to_meiqi(tr, args.output, order_list_path=args.order_list)
 
 
 if __name__ == '__main__':
