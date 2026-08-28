@@ -78,11 +78,6 @@ for f in os.listdir(app.config['UPLOAD_FOLDER']):
     except:
         pass
 
-# ── 默认订单列表（发票转换通用；存放在独立目录，不随 uploads 启动清理而丢失）──
-DEFAULT_ORDER_LIST_DIR = os.path.join(THIS_DIR, 'default_data')
-DEFAULT_ORDER_LIST_PATH = os.path.join(DEFAULT_ORDER_LIST_DIR, 'default_order_list.xlsx')
-os.makedirs(DEFAULT_ORDER_LIST_DIR, exist_ok=True)
-
 # ── 发票转换目标格式 ──
 TARGET_OPTIONS = {
     '天图': '天图下单发票',
@@ -143,8 +138,7 @@ def debug_template():
 
 @app.route('/invoice', methods=['GET'])
 def invoice_page():
-    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='invoice',
-                           has_default_order_list=os.path.exists(DEFAULT_ORDER_LIST_PATH))
+    return render_template('index.html', targets=TARGET_OPTIONS, active_tab='invoice')
 
 
 # ═══════════════════════════════════════════════════════════
@@ -246,30 +240,6 @@ def serve_temp_image(session_id, filename):
     """提供转换时提取的临时图片（IMAGE 公式引用）"""
     return send_from_directory(os.path.join(TEMP_IMAGE_DIR, session_id), filename)
 
-@app.route('/invoice_set_default_order_list', methods=['POST'])
-def invoice_set_default_order_list():
-    """上传设置默认订单列表：设置后所有发票转换自动使用（转换时单独上传可临时覆盖）。"""
-    f = request.files.get('default_order_list')
-    if not f or f.filename == '':
-        flash('请选择默认订单列表文件')
-        return redirect('/invoice')
-    os.makedirs(DEFAULT_ORDER_LIST_DIR, exist_ok=True)
-    f.save(DEFAULT_ORDER_LIST_PATH)
-    flash(f'✅ 默认订单列表已设置: {f.filename}（天图/航乐/美琦 转换自动用于匹配运单号）')
-    return redirect('/invoice')
-
-
-@app.route('/invoice_clear_default_order_list', methods=['POST'])
-def invoice_clear_default_order_list():
-    """清除默认订单列表，恢复为仅使用转换时上传的订单列表。"""
-    if os.path.exists(DEFAULT_ORDER_LIST_PATH):
-        os.remove(DEFAULT_ORDER_LIST_PATH)
-        flash('已清除默认订单列表')
-    else:
-        flash('当前未设置默认订单列表')
-    return redirect('/invoice')
-
-
 @app.route('/invoice_convert', methods=['POST'])
 def invoice_convert():
     invoice_file = request.files.get('invoice_file')
@@ -312,15 +282,11 @@ def invoice_convert():
 
         base_name = os.path.splitext(invoice_file.filename)[0]
 
-        # 订单列表（可选）：所有目标均支持按地址库编码回填客户订单号为运单号。
-        # 优先用本次上传的订单列表；未上传且已设置默认订单列表时，自动使用默认文件。
+        # 订单列表（可选）：所有目标（天图/航乐/美琦）均支持按地址库编码回填客户订单号为运单号。
         order_list_path = None
         if order_list_file and order_list_file.filename:
             order_list_path = os.path.join(tmp_dir, 'order_list.xlsx')
             order_list_file.save(order_list_path)
-        elif os.path.exists(DEFAULT_ORDER_LIST_PATH):
-            order_list_path = DEFAULT_ORDER_LIST_PATH
-            print(f'   📋 使用默认订单列表: {DEFAULT_ORDER_LIST_PATH}')
 
         # 文件名：航乐按 "客户名称 订单号 欧洲/英国发票.xlsx" 格式
         if target.startswith('航乐'):

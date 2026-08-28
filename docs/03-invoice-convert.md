@@ -13,19 +13,13 @@
 | 同上 | 航乐-欧洲发票 |
 | 同上 | 美琦美线发票 |
 
-## 运单号匹配规则（美琦 / 天图 / 航乐）
+## 运单号匹配规则（美琦 / 天图 / 航乐 通用）
 
-- 所有目标均可另传**订单列表** excel（含「地址库编码」「运单号」列），按地址库编码查表，把客户订单号回填为**运单号**。
+- 转换表单的**订单列表**上传字段对所有目标（天图/航乐/美琦）生效：上传订单列表 excel（含「地址库编码」「运单号」列），按地址库编码查表，把客户订单号回填为**运单号**。
 - 地址库编码 = 源「地址库编码」，为空取源「收件人姓名」（仓库代码，如 IND9/POZ1/RFD2）。
 - 各目标落点：**美琦** B1 客户订单号；**天图** B14 客户订单号；**航乐** 输出文件名中的订单号。
 - 未上传订单列表或编码未命中时，保留源客户订单号。
 - CLI：`python3 convert_invoice.py <发票.xlsx> --to <目标> --order-list <订单列表.xlsx>`
-
-### 默认订单列表（Web）
-
-- 可在发票转换页「📌 默认订单列表」上传设置一次，之后天图/航乐/美琦转换**自动使用**该订单列表匹配运单号，无需每次上传。
-- 转换时单独上传订单列表可**临时覆盖**默认。
-- 存储路径 `TR账单自动生成/default_data/default_order_list.xlsx`（独立于启动即清空的 uploads 目录）。注意：Railway 无持久卷时，重启/重新部署后需重新设置。
 
 ## 美琦转换要点
 
@@ -91,9 +85,7 @@ python3 convert_invoice.py <源发票.xlsx> <输出.xlsx> [--target 天图|航�
 ## Web 接口
 
 - 页面：`GET /invoice`
-- 提交：`POST /invoice_convert`（字段：`invoice_file`, `target`, `order_list`）
-- 设置默认订单列表：`POST /invoice_set_default_order_list`（字段：`default_order_list`）
-- 清除默认订单列表：`POST /invoice_clear_default_order_list`
+- 提交：`POST /invoice_convert`（字段：`invoice_file`, `target`, `order_list`，订单列表对所有目标通用）
 
 ## 详细规则
 
