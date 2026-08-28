@@ -1070,9 +1070,14 @@ def _load_order_list_map(order_list_path):
 
 
 def _load_order_rows(order_list_path):
-    """从订单列表 excel 解析全部数据行，返回 [{'运单号','仓库代码','供应商服务'}, ...]。
+    """从订单列表 excel 解析全部数据行，返回 [{'运单号','仓库代码','仓库代码s','供应商服务'}, ...]。
 
     自动定位表头行（含「运单号」）；未提供「供应商服务」列时该项为空串。
+
+    仓代码来源（重要）：很多订单列表（如 8 月导出）的「仓库代码」列为空，
+    FBA 仓代码实际在「收件人 / 公司名 / 收件人地址一」列（如 FWA4、GYR2、
+    DTM2-Amazon）。因此每行收集这些列的值，并从复合串（如 DTM2-Amazon）中
+    拆出 FBA 仓代码 token，一并存入『仓库代码s』候选列表供匹配。
     """
     wb = load_workbook(order_list_path, data_only=True)
     ws = wb.worksheets[0]
@@ -1096,20 +1101,56 @@ def _load_order_rows(order_list_path):
         return None
 
     waybill_col = find_col(['运单号'])
-    code_col = find_col(['地址库编码', '仓库代码', '仓库'])
+    code_col = find_col(['地址库编码', '仓库代码', '仓库', '仓点'])
+    recv_col = find_col(['收件人'])
+    comp_col = find_col(['公司名'])
+    addr_col = find_col(['收件人地址一'])
     service_col = find_col(['供应商服务'])
     if not waybill_col:
         print(f'   ⚠️ 订单列表未找到「运单号」列: {os.path.basename(order_list_path)}')
         return []
+
+    def collect_codes(r):
+        """收集该行所有仓代码候选：仓库代码/收件人/公司名/收件人地址一 的整串 + FBA token。"""
+        codes = []
+        seen = set()
+
+        def add(s):
+            s = str(s or '').strip().upper()
+            if s and s not in seen:
+                seen.add(s)
+                codes.append(s)
+
+        for col in (code_col, recv_col, comp_col, addr_col):
+            if not col:
+                continue
+            v = ws.cell(row=r, column=col).value
+            if v is None:
+                continue
+            add(v)
+            for tok in _re2.split(r'[-\s,，/\\|_]+', str(v)):
+                tok = tok.strip()
+                # 只保留 FBA 仓代码形态的拆分 token（丢弃 AMAZON/TIKTOK 等通用词）
+                if _FBA_CODE_RE.fullmatch(tok.upper()):
+                    add(tok)
+                m = _FBA_CODE_RE.search(tok.upper())
+                if m:
+                    add(m.group(0))
+        return codes
 
     rows = []
     for r in range(header_row + 1, ws.max_row + 1):
         waybill = ws.cell(row=r, column=waybill_col).value
         if waybill is None or not str(waybill).strip():
             continue
+        codes = collect_codes(r)
+        primary = str(ws.cell(row=r, column=code_col).value or '').strip() if code_col else ''
+        if not primary and codes:
+            primary = codes[0]
         rows.append({
             '运单号': str(waybill).strip(),
-            '仓库代码': str(ws.cell(row=r, column=code_col).value or '').strip() if code_col else '',
+            '仓库代码': primary,
+            '仓库代码s': codes,
             '供应商服务': str(ws.cell(row=r, column=service_col).value or '').strip() if service_col else '',
         })
     print(f'   📋 订单列表: {os.path.basename(order_list_path)}，{len(rows)} 行数据')
@@ -1145,7 +1186,9 @@ def _extract_warehouse_candidates(tr):
         add(v)
         for tok in _re2.split(r'[-\s,，/\\|]+', str(v)):
             tok = tok.strip()
-            add(tok)
+            # 只保留 FBA 仓代码形态的拆分 token（丢弃 GB/AMAZON 等通用词，避免误匹配）
+            if _FBA_CODE_RE.fullmatch(tok.upper()):
+                add(tok)
             m = _FBA_CODE_RE.search(tok.upper())
             if m:
                 add(m.group(0))
@@ -1176,24 +1219,28 @@ def _match_order_row(tr, order_list_path):
             if row.get('运单号') == order_no:
                 return row
 
-    # 2. 仓库代码（地址库编码）匹配 —— 多候选精确匹配
+    # 2. 仓库代码（地址库编码）匹配 —— 多候选精确匹配。
+    #    订单列表每行的仓代码候选来自 仓库代码/收件人/公司名/收件人地址一 多列
+    #    （含从复合串拆出的 FBA token），与 TR 侧候选逐一精确比对。
     wh_candidates = _extract_warehouse_candidates(tr)
     for cand in wh_candidates:
         for row in rows:
-            row_wh = (row.get('仓库代码') or '').strip().upper()
-            if row_wh and row_wh == cand:
-                return row
+            row_codes = row.get('仓库代码s') or []
+            for row_wh in row_codes:
+                if row_wh == cand:
+                    return row
 
     # 3. 前缀匹配（如订单列表是标准仓代码，候选带后缀前缀命中）
     for cand in wh_candidates:
         if not _FBA_CODE_RE.fullmatch(cand):
             continue
         for row in rows:
-            row_wh = (row.get('仓库代码') or '').strip().upper()
-            if not row_wh:
-                continue
-            if row_wh.startswith(cand) or cand.startswith(row_wh):
-                return row
+            row_codes = row.get('仓库代码s') or []
+            for row_wh in row_codes:
+                if not row_wh:
+                    continue
+                if row_wh.startswith(cand) or cand.startswith(row_wh):
+                    return row
 
     return None
 
