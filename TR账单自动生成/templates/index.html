@@ -324,6 +324,23 @@
         </div>
       </div>
 
+      <div class="form-group" id="stationGroup" style="display:none;">
+        <label>预计交货站点 <small>(美琦美线专用，可选，如：清溪仓/义乌仓/中山仓/广州仓/厦门仓/汕头仓/青岛仓)</small></label>
+        <input type="text" name="expected_station" id="stationInput" list="stationList"
+               class="format-select" style="height:auto;padding:10px 14px;"
+               placeholder="如：清溪仓">
+        <datalist id="stationList">
+          <option value="清溪仓"></option>
+          <option value="义乌仓"></option>
+          <option value="中山仓"></option>
+          <option value="广州仓"></option>
+          <option value="厦门仓"></option>
+          <option value="汕头仓"></option>
+          <option value="青岛仓"></option>
+        </datalist>
+        <div style="font-size:12px;color:#888;margin-top:6px;">填写后输出到美琦发票「预计交货站点」位置</div>
+      </div>
+
       <button type="submit" class="btn btn-primary" id="invoiceBtn">开始转换</button>
     </form>
   </div>
@@ -383,6 +400,16 @@
           <div class="hint">上传每周渠道报价表，自动匹配应收单价</div>
           <div class="filename"></div>
         </div>
+      </div>
+      <div class="form-group">
+        <label>报价方式 <small>(决定 E列应收单价以哪份报价为准)</small></label>
+        <select name="price_mode" class="format-select" style="height:auto;padding:10px 14px;">
+          <option value="weekly_first" selected>每周报价表优先，匹配不到回退报价表（推荐）</option>
+          <option value="quotation_first">报价表优先，报价表无价时才用每周报价表</option>
+          <option value="weekly_only">仅每周报价表，匹配不到 E列留空</option>
+          <option value="quotation_only">仅报价表，不匹配每周报价表</option>
+        </select>
+        <div style="font-size:12px;color:#888;margin-top:6px;">未上传每周报价表时，此设置不影响结果，E列一律按报价单匹配</div>
       </div>
       <div class="form-group">
         <label>箱规历史数据库 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
@@ -652,7 +679,7 @@ const DESCS = {
   '天图': '📋 天图下单发票模板：仓代码下拉、带电/带磁、报关方式、数据验证。输出 .xlsx。',
   '航乐-uk': '🇬🇧 航乐英国发票（GBP）：地址/VAT/渠道/包税/物品属性。输出 .xlsx。',
   '航乐-eu': '🇪🇺 航乐欧洲发票（EUR）：结构与英国版一致，货币为欧元。输出 .xlsx。',
-  '美琦': '🇺🇸 美琦美线发票：收件人信息按地址库编码自动查表填充，报关方式/海关编码自动归一化。输出 .xlsx。',
+  '美琦': '🇺🇸 美琦美线发票：只需匹配地址库编码（收件人信息留空），提货方式默认「自送货」，报关方式/海关编码自动归一化。输出 .xlsx。',
 };
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
@@ -660,6 +687,9 @@ function updateDesc() {
   // 订单列表上传区：所有目标（天图/航乐/美琦）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
   const og = document.getElementById('orderListGroup');
   if (og) og.style.display = '';
+  // 预计交货站点：仅美琦目标显示
+  const st = document.getElementById('stationGroup');
+  if (st) st.style.display = (sel.value === '美琦') ? '' : 'none';
 }
 updateDesc();
 

@@ -370,13 +370,19 @@ def parse_invoice_merge(invoice_files):
 
 # ── 输出生成 ──
 
-def _apply_weekly_price(out, weekly_entries):
-    """按 渠道+仓点+计费重 从每周报价表匹配应收单价，匹配到则覆盖 out['e_price']。
+def _apply_weekly_price(out, weekly_entries, price_mode='weekly_first'):
+    """按 渠道+仓点+计费重 从每周报价表匹配应收单价，按所选报价方式决定 E 列取值。
 
     渠道取 客户渠道(jtt_ch) 或发票服务；计费重用参考尺寸复刻模板 AD 列公式。
+
+    price_mode（报价方式）：
+      - weekly_first:    每周报价表优先，匹配不到回退报价表（默认）
+      - quotation_first: 报价表优先，匹配不到用每周报价表
+      - weekly_only:     仅每周报价表，匹配不到 E 列留空
+      - quotation_only:  仅报价表，不匹配每周报价表
     返回是否匹配成功。
     """
-    if not weekly_entries:
+    if not weekly_entries or price_mode == 'quotation_only':
         return False
     channel = out.get('jtt_ch') or out.get('service') or ''
     cw = wq.compute_chargeable_weight(out, channel)
@@ -384,15 +390,33 @@ def _apply_weekly_price(out, weekly_entries):
         return False
     wp, _mch, _mpat = wq.find_weekly_price(weekly_entries, channel, out.get('warehouse', ''), cw)
     if wp is None:
+        # 仅每周模式：匹配不到 → E 列留空，不回退报价表
+        if price_mode == 'weekly_only':
+            out['e_price'] = ''
         return False
+
+    quotation_price = out.get('e_price', '')
+
+    if price_mode == 'quotation_first':
+        # 报价表有价则用报价表；报价表无价时用每周报价表
+        if quotation_price not in (None, ''):
+            return False
+        out['e_price'] = wp
+        return True
+    # weekly_first（默认）与 weekly_only：每周报价匹配到则覆盖 E 列
     out['e_price'] = wp
     return True
 
 
 def generate_picking_output(invoice_file, system_file, output_path,
                               history_file=None, template_file=None,
-                              quotation_file=None, weekly_quotation_file=None):
-    """核心入口：生成内部拣货数据参考值"""
+                              quotation_file=None, weekly_quotation_file=None,
+                              price_mode='weekly_first'):
+    """核心入口：生成内部拣货数据参考值。
+
+    price_mode（报价方式）：weekly_first 每周优先（默认）/ quotation_first 报价表优先 /
+        weekly_only 仅每周（匹配不到 E 列留空）/ quotation_only 仅报价表。
+    """
     if history_file is None:
         history_file = HISTORY_FILE
     if template_file is None:
@@ -467,7 +491,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
             'ref_wid': hm['rwid'] if hm else None,
             'ref_h': hm['rh'] if hm else None,
         }
-        if _apply_weekly_price(out, weekly_entries):
+        if _apply_weekly_price(out, weekly_entries, price_mode):
             weekly_matched += 1
         output_rows.append(out)
         if hm is None:
@@ -477,7 +501,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
     if weekly_entries:
-        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行")
+        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行（报价方式: {price_mode}）")
 
     # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
     output_rows = merge_duplicate_picking_rows(output_rows)
@@ -662,7 +686,8 @@ def _write_output_to_template(output_rows, template_file, output_path):
 
 def generate_picking_output_multi(invoice_files, system_file, output_path,
                                    history_file=None, template_file=None,
-                                   quotation_file=None, weekly_quotation_file=None):
+                                   quotation_file=None, weekly_quotation_file=None,
+                                   price_mode='weekly_first'):
     """支持多份发票合并输出一份拣货数据
 
     参数:
@@ -674,6 +699,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         quotation_file: 报价表文件路径（可选）
         weekly_quotation_file: JTT每周渠道报价表路径（可选，提供则按 渠道+仓点+计费重
             匹配每周报价并覆盖 E列应收单价，匹配不到回退报价表）
+        price_mode: 报价方式（weekly_first 每周优先 / quotation_first 报价表优先 /
+            weekly_only 仅每周 / quotation_only 仅报价表）
     返回:
         (output_path, total_boxes)
     """
@@ -747,7 +774,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
             'ref_wid': hm['rwid'] if hm else None,
             'ref_h': hm['rh'] if hm else None,
         }
-        if _apply_weekly_price(out, weekly_entries):
+        if _apply_weekly_price(out, weekly_entries, price_mode):
             weekly_matched += 1
         output_rows.append(out)
         if hm is None:
@@ -757,7 +784,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
     if weekly_entries:
-        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行")
+        print(f"  💹 每周报价匹配: {weekly_matched}/{len(output_rows)} 行（报价方式: {price_mode}）")
 
     # ── 合并重复行（海外仓快递派"单行单箱"：FBA一致时按品名/实重/长宽高区分，重复合并）──
     output_rows = merge_duplicate_picking_rows(output_rows)

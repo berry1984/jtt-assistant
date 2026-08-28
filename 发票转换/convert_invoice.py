@@ -1116,12 +1116,50 @@ def _load_order_rows(order_list_path):
     return rows
 
 
+import re as _re2
+
+# FBA 仓代码形态：2-5 个字母 + 1-4 位数字（如 LBA4 / RFD2 / IND9 / AVP1 / SBD1）
+_FBA_CODE_RE = _re2.compile(r'[A-Za-z]{2,5}\d{1,4}')
+
+
+def _extract_warehouse_candidates(tr):
+    """从 TR 发票提取可能的仓库代码候选（用于匹配订单列表「仓库代码」）。
+
+    来源字段：地址库编码 / 仓库代码 / 收件人姓名。
+    每字段先整串，再从复合编码（如 GB-LBA4-DN110GU、LBA4-Amazon）中拆出
+    FBA 仓代码 token，去重后返回候选列表。
+    """
+    cands = []
+    seen = set()
+
+    def add(s):
+        s = str(s or '').strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            cands.append(s)
+
+    for key in ('地址库编码', '仓库代码', '收件人姓名'):
+        v = tr.get(key, '')
+        if v is None:
+            continue
+        add(v)
+        for tok in _re2.split(r'[-\s,，/\\|]+', str(v)):
+            tok = tok.strip()
+            add(tok)
+            m = _FBA_CODE_RE.search(tok.upper())
+            if m:
+                add(m.group(0))
+    return cands
+
+
 def _match_order_row(tr, order_list_path):
     """从订单列表匹配 TR 发票对应的行。
 
     匹配优先级：
       1. 订单号匹配：TR「客户订单号」== 订单列表「运单号」
-      2. 仓库代码匹配：TR「地址库编码」（为空取「收件人姓名」）== 订单列表「仓库代码」
+      2. 仓库代码匹配：从 TR「地址库编码/仓库代码/收件人姓名」提取候选仓代码
+         （含复合编码拆分，如 GB-LBA4-DN110GU → LBA4），精确匹配订单列表「仓库代码」；
+         无精确命中时再按 FBA 仓代码形态做前缀匹配。
     返回命中的行 dict（含「运单号」「供应商服务」）；未命中返回 None。
     美琦/天图/航乐 三家共用。
     """
@@ -1138,11 +1176,23 @@ def _match_order_row(tr, order_list_path):
             if row.get('运单号') == order_no:
                 return row
 
-    # 2. 仓库代码（地址库编码）匹配
-    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
-    if wh_code:
+    # 2. 仓库代码（地址库编码）匹配 —— 多候选精确匹配
+    wh_candidates = _extract_warehouse_candidates(tr)
+    for cand in wh_candidates:
         for row in rows:
-            if row.get('仓库代码') == wh_code:
+            row_wh = (row.get('仓库代码') or '').strip().upper()
+            if row_wh and row_wh == cand:
+                return row
+
+    # 3. 前缀匹配（如订单列表是标准仓代码，候选带后缀前缀命中）
+    for cand in wh_candidates:
+        if not _FBA_CODE_RE.fullmatch(cand):
+            continue
+        for row in rows:
+            row_wh = (row.get('仓库代码') or '').strip().upper()
+            if not row_wh:
+                continue
+            if row_wh.startswith(cand) or cand.startswith(row_wh):
                 return row
 
     return None
@@ -1185,18 +1235,21 @@ def _match_supplier_service(tr, order_list_path):
     return None
 
 
-def convert_to_meiqi(tr, output_path, order_list_path=None):
+def convert_to_meiqi(tr, output_path, order_list_path=None, expected_station=None):
     """
     TR发票 → 美琦美线发票格式
 
     新版美琦模版（美琦美线发票模版.xlsx）：
-      - 头部 Row 1-17：A 列=标签，B 列=值
+      - 头部 Row 1-17：A 列=标签，B 列=值；D/E 列为右侧栏（E1 预计交货站点、E3 提货方式）
       - 数据列头 Row 18：A-R（货箱编号/品名英/品名中/数量/单价/重量/长宽高/
         海关编码/品牌/材质/型号/用途/产品图片/PO Number/物品箱号/物品FBA ID），
         数据行从 Row 19 起
-    收件人信息从「亚马逊仓库代码」sheet 按地址库编码查表。
+    美琦美线规则：
+      - 只需匹配「地址库编码」(B4)，收件人姓名/地址/城市/省洲/邮编/国家(B5-B10)留空
+      - 提货方式(E3)默认填「自送货」
+      - 预计交货站点(E1)：传入 expected_station 则填写，否则保留模板默认
+    客户订单号(B1)：若提供 order_list_path（订单列表 excel），按仓点匹配运单号填入。
     产品图片参考天图从源发票提取并嵌入 O 列。
-    若提供 order_list_path（订单列表 excel），按地址库编码查运单号填入 B1 客户订单号。
     """
     if not os.path.exists(MEIQI_TEMPLATE):
         print(f'❌ 美琦模板不存在: {MEIQI_TEMPLATE}')
@@ -1208,23 +1261,6 @@ def convert_to_meiqi(tr, output_path, order_list_path=None):
     shutil.copy(MEIQI_TEMPLATE, output_path)
     wb = load_workbook(output_path)
     ws = wb['发票']
-
-    # ── 构建 亚马逊仓库代码 查表: {地址编码: {...}} ──
-    address_lib = {}
-    ws_addr = wb['亚马逊仓库代码']
-    for r in range(2, ws_addr.max_row + 1):
-        code = ws_addr.cell(row=r, column=1).value
-        if not code or not str(code).strip():
-            continue
-        address_lib[str(code).strip()] = {
-            '联系人': ws_addr.cell(row=r, column=3).value,   # C: 收件人姓名
-            '公司名': ws_addr.cell(row=r, column=4).value,   # D: 公司名
-            '地址一': ws_addr.cell(row=r, column=5).value,   # E: 地址一
-            '城市': ws_addr.cell(row=r, column=6).value,     # F: 城市
-            '省洲': ws_addr.cell(row=r, column=7).value,     # G: 省/洲
-            '国家': ws_addr.cell(row=r, column=8).value,     # H: 国家
-            '邮编': ws_addr.cell(row=r, column=9).value,     # I: 邮编
-        }
 
     def set_val(row, val):
         ws[f'B{row}'] = val if val is not None else ''
@@ -1263,31 +1299,19 @@ def convert_to_meiqi(tr, output_path, order_list_path=None):
                     ws_svc.cell(row=r, column=2).value = meiqi_service
                     break
 
-    # B4: 地址库编码
+    # B4: 地址库编码（美琦美线只需匹配地址库编码）
     set_val(4, wh_code)
 
-    # B5-B10: 收件人信息 = 亚马逊仓库代码查表；查不到回退源字段
-    if wh_code and wh_code in address_lib:
-        lib = address_lib[wh_code]
-        set_val(5, lib['联系人'])        # 收件人姓名
-        set_val(6, lib['地址一'])        # 收件人地址一
-        set_val(7, lib['城市'])          # 收件人城市
-        set_val(8, lib['省洲'])          # 收件人省/洲
-        set_val(9, lib['邮编'])          # 收件人邮编
-        set_val(10, lib['国家'])         # 收件人国家代码
-    else:
-        set_val(5, tr.get('收件人姓名', ''))
-        set_val(6, tr.get('收件人地址一', ''))
-        set_val(7, tr.get('收件人城市', ''))
-        set_val(8, tr.get('收件人省份/州', ''))
-        set_val(9, tr.get('收件人邮编', ''))
-        set_val(10, tr.get('收件人国家代码(二字代码)', '')
-                 or tr.get('收件人国家代码', '') or 'US')
+    # B5-B13: 收件人信息 → 全部留空（美琦美线不需要填写匹配收件人
+    #   姓名/地址/城市/省洲/邮编/国家代码/电话/邮箱/公司名称，只需地址库编码）
+    for _r in range(5, 14):
+        set_val(_r, '')
 
-    # B11-B13: 收件人电话/邮箱/公司名称 → 留空（与美琦完成示例一致）
-    set_val(11, '')
-    set_val(12, '')
-    set_val(13, '')
+    # E1: 预计交货站点 —— 传入则填写，否则保留模板默认「请选择」
+    if expected_station and str(expected_station).strip():
+        ws['E1'] = str(expected_station).strip()
+    # E3: 提货方式 —— 默认「自送货」
+    ws['E3'] = '自送货'
 
     # B14/B15: 带电/带磁（是/否）
     set_val(14, '是' if tr.get('带电', '否') == '是' else '否')

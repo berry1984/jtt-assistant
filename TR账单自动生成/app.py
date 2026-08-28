@@ -259,6 +259,7 @@ def serve_temp_image(session_id, filename):
 def invoice_convert():
     invoice_file = request.files.get('invoice_file')
     order_list_file = request.files.get('order_list')
+    expected_station = (request.form.get('expected_station') or '').strip()
     target = request.form.get('target', '天图')
 
     if not invoice_file or invoice_file.filename == '':
@@ -331,7 +332,8 @@ def invoice_convert():
             ok = convert_to_hangle(tr, output_path, region='eu', image_url_base=image_url_base,
                                    order_list_path=order_list_path)
         elif target == '美琦':
-            ok = convert_to_meiqi(tr, output_path, order_list_path=order_list_path)
+            ok = convert_to_meiqi(tr, output_path, order_list_path=order_list_path,
+                                  expected_station=expected_station)
 
         if not ok:
             flash('转换失败，请检查源文件格式')
@@ -451,7 +453,12 @@ def picking_export():
     """
     新规则（2026-06-10）：
     上传 发票 + 系统导出拣货数据 → 匹配箱规历史数据库 → 输出内部拣货数据参考值
-    可选上传 JTT每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价（E列），回退报价表
+    可选上传 JTT每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价（E列）
+    报价方式（price_mode）：
+      - weekly_first    每周报价表优先，匹配不到回退报价表（默认）
+      - quotation_first 报价表优先，报价表有价则用报价表，无价用每周报价表
+      - weekly_only     仅每周报价表，匹配不到 E 列留空
+      - quotation_only  仅报价表，不匹配每周报价表
     """
     sys.path.insert(0, PICKING_DIR)
 
@@ -460,6 +467,9 @@ def picking_export():
     history_file = request.files.get('picking_history')
     quotation_file = request.files.get('picking_quotation')
     weekly_file = request.files.get('picking_weekly')
+    price_mode = (request.form.get('price_mode') or 'weekly_first').strip()
+    if price_mode not in ('weekly_first', 'quotation_first', 'weekly_only', 'quotation_only'):
+        price_mode = 'weekly_first'
 
     if not invoice_files or all(f.filename == '' for f in invoice_files):
         flash('请上传至少一份发票文件')
@@ -520,7 +530,8 @@ def picking_export():
         result, total_boxes = generate_picking_output_multi(invoice_paths, system_path, output_path,
                                                              history_file=history_path,
                                                              quotation_file=quotation_path,
-                                                             weekly_quotation_file=weekly_path)
+                                                             weekly_quotation_file=weekly_path,
+                                                             price_mode=price_mode)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date
