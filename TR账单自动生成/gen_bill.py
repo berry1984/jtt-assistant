@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 番茄钟账单生成器
-用途：根据 订单列表 + 内部拣货数据参考值（拣货数据模块生成） 两个Excel文件，生成标准格式账单。
-不再需要单独上传「应收价格」：单价抓取参考值模版中的「应收单价」列，重量/箱数/尺寸也从参考值抓取。
+用途：根据 内部拣货数据参考值（拣货数据模块生成） Excel文件，生成标准格式账单（不再依赖订单列表）。
+发货日期直接抓取参考值「下单时间」列（A列），日期格式保持账单模板不变（如 8月19日）。
 
 用法：
-  python3 gen_bill.py <订单列表.xlsx> <内部拣货数据参考值.xlsx> [输出文件名.xlsx]
+  python3 gen_bill.py <内部拣货数据参考值.xlsx> [输出文件名.xlsx]
 
 规则：
   - 单价(K列) = 参考值「应收单价」列（按 SO+FBA 行对应，回退仓库代码）
-  - J列(计费重) = 复刻参考值模版「计费重」公式 ROUND(MAX(参考实重×箱数, 参考材积重×箱数))，并按订单收费重调整最大项
-  - 特殊服务(美国快递-*包税 等)：不按订单收费重调整
+  - J列(计费重) = 复刻参考值模版「计费重」公式 ROUND(MAX(参考实重×箱数, 参考材积重×箱数))
+  - 特殊服务(美国快递-*包税 等)：按参考值计费重直接取
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - 保留完整浮点精度（使用公式）
   - 排序：按渠道分组 → FBA列(箱号)含FBA字眼的运单在前 → SO → FBA
@@ -102,15 +102,15 @@ def _find_col(headers, needles, exclude=()):
 def _parse_reference(ref_path):
     """解析「内部拣货数据参考值」模版（拣货数据模块生成）。
 
-    列布局（行1为表头）：
-      A=系统SO号  B=客户渠道  C=国家  D=仓库代码  E=应收单价  F=应付单价
-      K=FBA ID  M=总箱数  N=实重  O=长  P=宽  Q=高
-      U=参考实重  V=参考长  W=参考宽  X=参考高  H=供应商渠道
-    SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充。
+    列布局（行1为表头，A 为新增「下单时间」列）：
+      A=下单时间  B=系统SO号  C=客户渠道  D=国家  E=仓库代码  F=应收单价  G=应付单价
+      K=FBA ID  N=总箱数  O=实重  P=长  Q=宽  R=高
+      W=参考实重  X=参考长  Y=参考宽  Z=参考高  H=供应商渠道
+    下单时间/SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充。
 
     返回:
-      ref_rows: {SO: [{fba, wh, channel, country, supplier_ch, e_price,
-                       boxes, weight(N), length, width, height,
+      ref_rows: {SO: [{order_time, fba, wh, channel, country, supplier_ch, e_price,
+                       f_price, boxes, weight(N), length, width, height,
                        ref_w, ref_l, ref_wid, ref_h}, ...]}
       warehouse_prices: {仓库代码: 应收单价}（首见为准，供回退与报价表A）
       price_rows_raw:   [(客户渠道, 仓库代码, 应收单价)]（按仓库去重，供报价表A）
@@ -133,8 +133,9 @@ def _parse_reference(ref_path):
     if totw_c:
         _excl.add(totw_c)
 
-    so_c      = _find_col(headers_by_col, ['系统SO号', 'SO号', 'SO'])
-    ch_c      = _find_col(headers_by_col, ['客户渠道'])
+    so_c        = _find_col(headers_by_col, ['系统SO号', 'SO号', 'SO'])
+    order_time_c = _find_col(headers_by_col, ['下单时间', '下单日期'])
+    ch_c        = _find_col(headers_by_col, ['客户渠道'])
     country_c = _find_col(headers_by_col, ['国家'])
     wh_c      = _find_col(headers_by_col, ['仓库代码'])
     e_c       = _find_col(headers_by_col, ['应收单价', '应收'])
@@ -157,12 +158,14 @@ def _parse_reference(ref_path):
     warehouse_prices = {}
     price_rows_raw = []
     cur_so = cur_ch = cur_country = cur_wh = ''
+    cur_order_time = None
     for r in ws.iter_rows(min_row=2, values_only=True):
         if _s(r[so_c - 1]):
             cur_so = _s(r[so_c - 1])
             cur_ch = _s(r[ch_c - 1]) if ch_c else ''
             cur_country = _s(r[country_c - 1]) if country_c else ''
             cur_wh = _s(r[wh_c - 1]) if wh_c else ''
+            cur_order_time = r[order_time_c - 1] if order_time_c else None
         if not cur_so:
             continue
         fba = r[fba_c - 1]
@@ -174,6 +177,7 @@ def _parse_reference(ref_path):
             price_rows_raw.append((cur_ch, cur_wh, e_price))
         ref_rows.setdefault(cur_so, []).append({
             'so': cur_so,
+            'order_time': cur_order_time,
             'fba': _s(fba),
             'wh': cur_wh,
             'channel': cur_ch,
@@ -194,26 +198,13 @@ def _parse_reference(ref_path):
     return ref_rows, warehouse_prices, price_rows_raw
 
 
-def load_data(order_path, ref_path):
-    """Load order list + 内部拣货数据参考值, return
-    (orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups)"""
-
-    # ── Order list ──
-    wb = load_workbook(order_path)
-    ws = wb.active
-    h = [c.value for c in list(ws.iter_rows(min_row=1, max_row=1))[0]]
-    orders = {}
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        d = dict(zip(h, r))
-        orders[d['运单号']] = d
-
-    # ── 内部拣货数据参考值（单价/重量/箱数/尺寸来源） ──
+def load_data(ref_path):
+    """Load 内部拣货数据参考值（TR账单已不依赖订单列表）, return
+    (ref_rows, warehouse_prices, price_rows_raw, declaration_groups)"""
     ref_rows, warehouse_prices, price_rows_raw = _parse_reference(ref_path)
-
     # ── 报关分组规则：在生成账单时按账单内每行的 (走货渠道, SO) 直接判定（见 generate_bill） ──
     declaration_groups = []
-
-    return orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups
+    return ref_rows, warehouse_prices, price_rows_raw, declaration_groups
 
 def lookup_price(prices, wh_code):
     """Look up price by warehouse code, with suffix matching"""
@@ -259,11 +250,11 @@ def compute_ref_weight(row, channel):
     return round(max(actual * M, vol * M))
 
 
-def build_rows(orders, ref_rows, warehouse_prices):
-    """Build bill rows from 订单列表 + 内部拣货数据参考值。
+def build_rows(ref_rows, warehouse_prices):
+    """Build bill rows from 内部拣货数据参考值（不再依赖订单列表）。
 
-    单价取参考值「应收单价」；重量复刻「计费重」公式；参考值中缺该 SO 时回退订单自身
-    （重量=订单收费重，单价按仓库代码匹配，匹配不到记 0）。
+    单价取参考值「应收单价」；重量复刻「计费重」公式（参考值 A 列「下单时间」为发货日期来源，
+    账单日期格式不变）；每行全部来自参考值，无订单回退分支。
     """
 
     def to_num(v, default=0):
@@ -290,83 +281,34 @@ def build_rows(orders, ref_rows, warehouse_prices):
                 return warehouse_prices[key]
         return 0
 
-    def order_wh(o):
-        """订单仓库代码：优先「仓库代码」列（截 - 前），为空回退「收件人」列
-        （- 后为 Amazon 才截 - 前，否则保留完整），与旧流程一致。"""
-        wh_raw = str(o.get('仓库代码', '') or '').strip()
-        if wh_raw:
-            return wh_raw.split('-')[0]
-        recv = str(o.get('收件人', '') or '').strip()
-        if recv:
-            return recv.split('-')[0] if recv.split('-')[-1] == 'Amazon' else recv
-        return ''
-
     all_rows = []
 
-    for so_raw, o in sorted(orders.items()):
-        so = str(so_raw).strip()
-        service = o['服务']
-        volumetric_mode = service in VOLUMETRIC_SERVICES
-        # 日期优先：创建日期/下单时间 → 发货日期 → 工作日期；字符串格式也解析（不要求 Excel 日期类型）
-        date_val = (parse_order_date(o.get('创建日期'))
-                    or parse_order_date(o.get('下单时间'))
-                    or parse_order_date(o.get('发货日期'))
-                    or parse_order_date(o.get('工作日期'))
-                    or '')
-        total_weight_order = to_num(o.get('收费重', 0))
-        fba_ext = o['扩展单号'].split(',') if o['扩展单号'] else []
-        so_rows = ref_rows.get(so)
-
-        if so_rows:
-            fba_rows = []
-            for ref in so_rows:
-                wh_code_ref = ref['wh'] or order_wh(o)
-                # 应收单价缺失时回退仓库匹配单价（参考值中 E 空 = 报价单无该仓库）
-                e_price = ref['e_price']
-                if e_price in (None, ''):
-                    e_price = lookup_wh_price(wh_code_ref)
-                fba_rows.append({
-                    'so': so,
-                    'fba': ref['fba'],
-                    'date': date_val,
-                    'service': service,
-                    'wh': wh_code_ref,
-                    'boxes': int(to_num(ref['boxes'])),
-                    'length': to_num(ref['length']),
-                    'width': to_num(ref['width']),
-                    'height': to_num(ref['height']),
-                    'weight_raw': compute_ref_weight(ref, service),
-                    'unit_price': to_num(e_price),
-                })
-
-            for r in fba_rows:
-                r['weight'] = round(to_num(r['weight_raw']))
-
-            if not volumetric_mode:
-                # 特殊服务直接用计算结果，不再调整以匹配订单收费重
-                rounded_sum = sum(r['weight'] for r in fba_rows)
-                diff = total_weight_order - rounded_sum
-
-                if diff != 0 and fba_rows:
-                    fba_rows_sorted = sorted(enumerate(fba_rows),
-                        key=lambda x: (-x[1]['weight_raw'], x[1]['fba']))
-                    remaining, sign = abs(diff), 1 if diff > 0 else -1
-                    for idx, item in fba_rows_sorted:
-                        if remaining <= 0: break
-                        item['weight'] += sign * 1
-                        remaining -= 1
-
-            all_rows.extend(fba_rows)
-        else:
-            # 参考值中无此 SO：回退订单自身（仓库代码 → 仓库匹配单价，无则 0）
-            wh_code = order_wh(o)
+    for so in sorted(ref_rows.keys()):
+        ref_list = ref_rows[so]
+        # 渠道取参考值「客户渠道」列（该 SO 分组内一致）
+        channel = (ref_list[0].get('channel') or '').strip()
+        # 发货日期 = 参考值「下单时间」列（8月19日格式不变，解析不了留空）
+        date_val = parse_order_date(ref_list[0].get('order_time')) or ''
+        for ref in ref_list:
+            wh_code_ref = ref['wh'] or ''
+            # 应收单价缺失时回退仓库匹配单价（参考值中 E 空 = 报价单无该仓库）
+            e_price = ref['e_price']
+            if e_price in (None, ''):
+                e_price = lookup_wh_price(wh_code_ref)
+            ref_weight = compute_ref_weight(ref, channel)
             all_rows.append({
-                'so': so, 'fba': fba_ext[0] if fba_ext else '',
-                'date': date_val, 'service': service, 'wh': wh_code,
-                'boxes': int(to_num(o.get('件数', 0))),
-                'length': 0, 'width': 0, 'height': 0,
-                'weight': total_weight_order, 'weight_raw': total_weight_order,
-                'unit_price': to_num(lookup_wh_price(wh_code)),
+                'so': so,
+                'fba': ref['fba'],
+                'date': date_val,
+                'service': channel,
+                'wh': wh_code_ref,
+                'boxes': int(to_num(ref['boxes'])),
+                'length': to_num(ref['length']),
+                'width': to_num(ref['width']),
+                'height': to_num(ref['height']),
+                'weight': round(ref_weight),
+                'weight_raw': ref_weight,
+                'unit_price': to_num(e_price),
             })
 
     # Filter out rows with zero weight (no actual cargo)
@@ -752,31 +694,25 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("用法: python3 gen_bill.py <订单列表.xlsx> <内部拣货数据参考值.xlsx> [输出文件名]")
+    if len(sys.argv) < 2:
+        print("用法: python3 gen_bill.py <内部拣货数据参考值.xlsx> [输出文件名]")
         sys.exit(1)
 
-    order_path = sys.argv[1]
-    ref_path = sys.argv[2]
+    ref_path = sys.argv[1]
 
-    print(f"📂 订单列表: {order_path}")
     print(f"📂 内部拣货数据参考值: {ref_path}")
 
-    # Load
-    orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(order_path, ref_path)
-    n_so = len(orders)
+    # Load（仅参考值，已不依赖订单列表）
+    ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(ref_path)
+    n_so = len(ref_rows)
     n_ref = sum(len(v) for v in ref_rows.values())
-    print(f"✅ 订单: {n_so} 条, 参考值行: {n_ref} 行, 仓库单价: {len(warehouse_prices)} 个")
+    print(f"✅ 参考值SO: {n_so} 条, 行: {n_ref} 行, 仓库单价: {len(warehouse_prices)} 个")
     print(f"📋 报关组: 在账单内按 (走货渠道, SO) 判定")
 
-    # Compute date range from orders
+    # 日期范围从参考值「下单时间」列计算（发货日期来源）
     date_serials = []
-    for o in orders.values():
-        # 下单时间/创建日期优先（字符串格式也解析），为空回退发货→工作日期（避免有表头但无值导致日期段退化为固定 .1-.7）
-        d = (parse_order_date(o.get('创建日期'))
-             or parse_order_date(o.get('下单时间'))
-             or parse_order_date(o.get('发货日期'))
-             or parse_order_date(o.get('工作日期')))
+    for so, ref_list in ref_rows.items():
+        d = parse_order_date(ref_list[0].get('order_time'))
         if d:
             date_serials.append((d - datetime(1899, 12, 30)).days)
 
@@ -796,7 +732,7 @@ def main():
         title_str = "至：广州拓锐科技有限公司"
 
     # Build rows
-    rows = build_rows(orders, ref_rows, warehouse_prices)
+    rows = build_rows(ref_rows, warehouse_prices)
 
     # Sort
     rows = sort_rows(rows, declaration_groups=declaration_groups)
@@ -815,7 +751,7 @@ def main():
 
     # Auto-generate filename (dynamic year/month)
     file_month = date_range_str.split('.')[0] if date_range_str and '.' in date_range_str else f'{datetime.now().month}'
-    output_path = sys.argv[4] if len(sys.argv) > 4 else \
+    output_path = sys.argv[2] if len(sys.argv) > 2 else \
         f'{year}年{file_month}月拓锐FBA仓-分段开票账单-JTT({date_range_str}) RMB {total_rounded}.xlsx'
 
     print(f"📄 输出: {output_path}")

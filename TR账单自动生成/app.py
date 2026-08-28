@@ -165,30 +165,24 @@ def invoice_page():
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    order_file = request.files.get('order_file')
     ref_file = request.files.get('ref_file')
 
-    if not all([order_file, ref_file]):
-        flash('请上传两个文件：订单列表、内部拣货数据参考值')
+    if not ref_file:
+        flash('请上传文件：内部拣货数据参考值')
         return redirect('/bill')
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
     try:
-        order_path = os.path.join(tmp_dir, 'order.xlsx')
         ref_path = os.path.join(tmp_dir, 'ref.xlsx')
-        order_file.save(order_path)
         ref_file.save(ref_path)
 
-        orders, ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(order_path, ref_path)
-        rows = build_rows(orders, ref_rows, warehouse_prices)
+        ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(ref_path)
+        rows = build_rows(ref_rows, warehouse_prices)
         rows = sort_rows(rows, declaration_groups=declaration_groups)
         date_serials = []
-        for o in orders.values():
-            # 下单时间/创建日期优先（字符串格式也解析），为空回退发货→工作日期
-            d = (parse_order_date(o.get('创建日期'))
-                 or parse_order_date(o.get('下单时间'))
-                 or parse_order_date(o.get('发货日期'))
-                 or parse_order_date(o.get('工作日期')))
+        for so, ref_list in ref_rows.items():
+            # 发货日期 = 参考值「下单时间」列（A列，系统导出抓取）
+            d = parse_order_date(ref_list[0].get('order_time'))
             if d:
                 date_serials.append((d - datetime(1899, 12, 30)).days)
 

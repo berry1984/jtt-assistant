@@ -140,20 +140,47 @@ def parse_invoice(filepath):
 
 
 def parse_system_export(filepath):
-    """解析系统导出拣货数据，返回 {FBA前缀 → SO号} 映射"""
+    """解析系统导出拣货数据，返回 ({FBA前缀 → SO号}, {SO号 → 下单时间})。
+
+    按表头自动定位「运单号 / 扩展箱号 / 下单时间」列；无「下单时间」列时
+    下单时间映射为空 dict（对应行输出为空）。
+    """
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
+    # 表头识别（第1行）
+    headers = {}
+    for c in range(1, ws.max_column + 1):
+        headers[c] = str(ws.cell(row=1, column=c).value or '').strip()
+
+    def find_col(*needles):
+        for c, h in headers.items():
+            if any(n in h for n in needles):
+                return c
+        return None
+
+    ext_col = find_col('扩展箱号', '箱号')
+    so_col = find_col('运单号')
+    time_col = find_col('下单时间', '下单日期', '下单')
+    if ext_col is None or so_col is None:
+        wb.close()
+        return {}, {}
+
     prefix_to_so = {}
+    so_order_times = {}
     for r in range(2, ws.max_row + 1):
-        ext_box = str(ws.cell(row=r, column=3).value or '').strip()
-        so_no = str(ws.cell(row=r, column=2).value or '').strip()
+        ext_box = str(ws.cell(row=r, column=ext_col).value or '').strip()
+        so_no = str(ws.cell(row=r, column=so_col).value or '').strip()
         if not ext_box or not so_no:
             continue
         order_id = extract_order_id(ext_box)
         if order_id not in prefix_to_so:
             prefix_to_so[order_id] = so_no
+        if time_col:
+            t = ws.cell(row=r, column=time_col).value
+            if t is not None and so_no not in so_order_times:
+                so_order_times[so_no] = t
     wb.close()
-    return prefix_to_so
+    return prefix_to_so, so_order_times
 
 
 def parse_history(filepath):
@@ -426,7 +453,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
     # ── 解析输入 ──
     data_rows, service, warehouse = parse_invoice(invoice_file)
-    prefix_to_so = parse_system_export(system_file)
+    prefix_to_so, so_order_times = parse_system_export(system_file)
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
     weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
@@ -467,6 +494,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
         out = {
             'so_no': so_no,
+            'order_time': so_order_times.get(so_no, ''),
             'service': row_svc,
             'country': country_from_warehouse(row_wh),
             'warehouse': row_wh,
@@ -521,21 +549,21 @@ ALIGN_CENTER = Alignment(horizontal='center', vertical='center')
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center')
 ALIGN_WRAP = Alignment(vertical='center', wrap_text=True)
 
-# 需要居中对齐的数值/公式列
-CENTER_COLS = {3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
+# 需要居中对齐的数值/公式列（A 列插入「下单时间」后整体右移 1）
+CENTER_COLS = {4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
 # 需要左对齐的文本列
-LEFT_COLS = {1, 2, 8, 9, 10, 11}
+LEFT_COLS = {1, 2, 3, 9, 10, 11, 12}
 
-# 列宽（匹配标准版）
+# 列宽（匹配标准版，A 列插入「下单时间」后整体右移 1）
 COL_WIDTHS = {
-    'A': 18.54, 'B': 21.46, 'C': 10.56, 'D': 9.54,
-    'E': 8.43, 'F': 8.43, 'G': 8.16, 'H': 27.44,
-    'I': 21.78, 'J': 9.54, 'K': 17.61, 'L': 19.0,
-    'M': 12.16, 'N': 7.07, 'O': 8.39, 'P': 8.39,
-    'Q': 8.39, 'R': 7.61, 'S': 9.0, 'T': 6.33,
-    'U': 6.11, 'V': 10.89, 'W': 12.46, 'X': 8.43,
-    'Y': 7.61, 'Z': 5.93, 'AA': 8.07, 'AB': 9.54,
-    'AC': 8.07, 'AD': 9.0, 'AE': 9.54,
+    'A': 21.0, 'B': 18.54, 'C': 21.46, 'D': 10.56,
+    'E': 9.54, 'F': 8.43, 'G': 8.43, 'H': 8.16,
+    'I': 27.44, 'J': 21.78, 'K': 9.54, 'L': 17.61,
+    'M': 19.0, 'N': 12.16, 'O': 7.07, 'P': 8.39,
+    'Q': 8.39, 'R': 8.39, 'S': 7.61, 'T': 9.0,
+    'U': 6.33, 'V': 6.11, 'W': 10.89, 'X': 12.46,
+    'Y': 8.43, 'Z': 7.61, 'AA': 5.93, 'AB': 8.07,
+    'AC': 9.54, 'AD': 8.07, 'AE': 9.0, 'AF': 9.54,
 }
 
 
@@ -547,22 +575,30 @@ def _style_data_cell(cell):
     if col in CENTER_COLS:
         cell.alignment = ALIGN_CENTER
     elif col in LEFT_COLS:
-        if col == 8:  # 供应商渠道 → 允许换行
+        if col == 9:  # 船名 → 允许换行
             cell.alignment = ALIGN_WRAP
         else:
             cell.alignment = ALIGN_LEFT
 def _write_output_to_template(output_rows, template_file, output_path):
-    """将输出行数据写入模板并保存"""
+    """将输出行数据写入模板并保存（A 列「下单时间」插在系统SO号前）"""
     wb = openpyxl.load_workbook(template_file)
     ws = wb.active
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
+    # 先取消数据区合并（插入列不会移动合并区域，需先清掉再插列）
     merges_to_remove = [str(m) for m in list(ws.merged_cells.ranges) if m.min_row >= 2]
     for m_str in merges_to_remove:
         ws.unmerge_cells(m_str)
+    # 插入「下单时间」列：表头与数据整体右移一列，新 A 列留空待填
+    ws.insert_cols(1)
     max_existing = ws.max_row
     if max_existing >= 2:
         ws.delete_rows(2, max_existing - 1)
+
+    # 表头 A1 = 下单时间（样式沿用相邻表头）
+    hdr = ws.cell(row=1, column=1)
+    hdr.value = '下单时间'
+    hdr._style = ws.cell(row=1, column=2)._style
 
     groups = []
     cur = []
@@ -582,90 +618,95 @@ def _write_output_to_template(output_rows, template_file, output_path):
     current_row = 2
     for group in groups:
         start_row = current_row
+        # A列=下单时间（系统导出抓取，无该列则留空）
         c1 = ws.cell(row=start_row, column=1)
-        c1.value = group[0]['so_no']
+        c1.value = group[0].get('order_time', '')
         _style_data_cell(c1)
-        # 客户渠道(B列)：优先取报价单的 JTT物流渠道，无匹配时回退发票"服务"列
-        channel = group[0].get('jtt_ch') or group[0].get('service', '')
+        # B列=系统SO号
         c2 = ws.cell(row=start_row, column=2)
-        c2.value = channel
+        c2.value = group[0]['so_no']
         _style_data_cell(c2)
+        # C列=客户渠道：优先取报价单的 JTT物流渠道，无匹配时回退发票"服务"列
+        channel = group[0].get('jtt_ch') or group[0].get('service', '')
         c3 = ws.cell(row=start_row, column=3)
-        c3.value = group[0]['country']
+        c3.value = channel
         _style_data_cell(c3)
+        # D列=国家
+        c4 = ws.cell(row=start_row, column=4)
+        c4.value = group[0]['country']
+        _style_data_cell(c4)
         for row_data in group:
             r = current_row
-            # D列=仓库代码：同一分组内仓库一致，每行重复填写
-            c4 = ws.cell(row=r, column=4)
-            c4.value = row_data.get('warehouse', '')
-            _style_data_cell(c4)
-            # E列=应收单价, F列=应付单价, G列=供应商渠道（从报价单读取）
-            for col, key in [(5, 'e_price'), (6, 'f_price'), (7, 'supplier_ch')]:
+            # E列=仓库代码：同一分组内仓库一致，每行重复填写
+            c5 = ws.cell(row=r, column=5)
+            c5.value = row_data.get('warehouse', '')
+            _style_data_cell(c5)
+            # F/G/H列=应收单价/应付单价/供应商渠道（从报价单读取）
+            for col, key in [(6, 'e_price'), (7, 'f_price'), (8, 'supplier_ch')]:
                 cell = ws.cell(row=r, column=col)
                 cell.value = row_data.get(key, '')
                 _style_data_cell(cell)
-            for col, key in [(10, 'fba_id'), (11, 'cn_name')]:
+            for col, key in [(11, 'fba_id'), (12, 'cn_name')]:
                 cell = ws.cell(row=r, column=col)
                 cell.value = row_data[key]
                 _style_data_cell(cell)
-            for col, key in [(13, 'box_count'), (14, 'weight'), (15, 'length'),
-                              (16, 'width'), (17, 'height')]:
+            for col, key in [(14, 'box_count'), (15, 'weight'), (16, 'length'),
+                              (17, 'width'), (18, 'height')]:
                 cell = ws.cell(row=r, column=col)
                 cell.value = row_data[key]
                 _style_data_cell(cell)
-            # R列=材积重（公式）
-            cell_r = ws.cell(row=r, column=18)
-            cell_r.value = f'=O{r}*P{r}*Q{r}/6000'
-            cell_r.number_format = '#,##0.00'
-            _style_data_cell(cell_r)
-            # S列=单箱材积重差异
+            # S列=材积重（公式）
             cell_s = ws.cell(row=r, column=19)
-            cell_s.value = f'=R{r}-Z{r}'
+            cell_s.value = f'=P{r}*Q{r}*R{r}/6000'
+            cell_s.number_format = '#,##0.00'
             _style_data_cell(cell_s)
-            # T列=周长差异
+            # T列=单箱材积重差异
             cell_t = ws.cell(row=r, column=20)
-            cell_t.value = f'=O{r}+P{r}+Q{r}-Y{r}-X{r}-W{r}'
+            cell_t.value = f'=S{r}-AA{r}'
             _style_data_cell(cell_t)
-            # V/W/X/Y = 参考长/宽/高/实重
-            v_val, w_val, x_val, y_val = row_data['ref_w'], row_data['ref_l'], row_data['ref_wid'], row_data['ref_h']
-            for col, val in [(22, v_val), (23, w_val), (24, x_val), (25, y_val)]:
+            # U列=周长差异
+            cell_u = ws.cell(row=r, column=21)
+            cell_u.value = f'=P{r}+Q{r}+R{r}-Z{r}-Y{r}-X{r}'
+            _style_data_cell(cell_u)
+            # W/X/Y/Z = 参考实重/长/宽/高
+            w_val, x_val, y_val, z_val = row_data['ref_w'], row_data['ref_l'], row_data['ref_wid'], row_data['ref_h']
+            for col, val in [(23, w_val), (24, x_val), (25, y_val), (26, z_val)]:
                 cell = ws.cell(row=r, column=col)
                 cell.value = val
                 _style_data_cell(cell)
             # 无历史匹配 → 标红
-            if all(v is None for v in [v_val, w_val, x_val, y_val]):
-                for col in [22, 23, 24, 25]:
+            if all(v is None for v in [w_val, x_val, y_val, z_val]):
+                for col in [23, 24, 25, 26]:
                     ws.cell(row=r, column=col).fill = red_fill
-
-            elif v_val is None: ws.cell(row=r, column=22).fill = red_fill
             elif w_val is None: ws.cell(row=r, column=23).fill = red_fill
             elif x_val is None: ws.cell(row=r, column=24).fill = red_fill
             elif y_val is None: ws.cell(row=r, column=25).fill = red_fill
-            # Y列=材积重（公式）
-            cell_y = ws.cell(row=r, column=26)
-            cell_y.value = f'=W{r}*X{r}*Y{r}/6000'
-            cell_y.number_format = '#,##0.00'
-            _style_data_cell(cell_y)
-            # Z列=体积（公式）
-            cell_z = ws.cell(row=r, column=27)
-            cell_z.value = f'=W{r}*X{r}*Y{r}*M{r}/1000000'
-            _style_data_cell(cell_z)
-            # AA列=总实重（公式）
-            cell_aa = ws.cell(row=r, column=28)
-            cell_aa.value = f'=V{r}*M{r}'
+            elif z_val is None: ws.cell(row=r, column=26).fill = red_fill
+            # AA列=材积重（公式，参考尺寸）
+            cell_aa = ws.cell(row=r, column=27)
+            cell_aa.value = f'=X{r}*Y{r}*Z{r}/6000'
+            cell_aa.number_format = '#,##0.00'
             _style_data_cell(cell_aa)
-            # AB列=总材积重（公式）
-            cell_ab = ws.cell(row=r, column=29)
-            cell_ab.value = f'=Z{r}*M{r}'
-            cell_ab.number_format = '#,##0.00'
+            # AB列=体积（公式）
+            cell_ab = ws.cell(row=r, column=28)
+            cell_ab.value = f'=X{r}*Y{r}*Z{r}*N{r}/1000000'
             _style_data_cell(cell_ab)
-            # AC列=计费重（公式）
-            cell_ac = ws.cell(row=r, column=30)
-            if '快递派' in channel:  # 客户渠道为快递派：单箱最低计费重不小于 12kg
-                cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r},M{r}*12),0)'
-            else:
-                cell_ac.value = f'=ROUND(MAX(AB{r}:AC{r}),0)'
+            # AC列=总实重（公式）
+            cell_ac = ws.cell(row=r, column=29)
+            cell_ac.value = f'=W{r}*N{r}'
             _style_data_cell(cell_ac)
+            # AD列=总材积重（公式）
+            cell_ad = ws.cell(row=r, column=30)
+            cell_ad.value = f'=AA{r}*N{r}'
+            cell_ad.number_format = '#,##0.00'
+            _style_data_cell(cell_ad)
+            # AE列=计费重（公式）
+            cell_ae = ws.cell(row=r, column=31)
+            if '快递派' in channel:  # 客户渠道为快递派：单箱最低计费重不小于 12kg
+                cell_ae.value = f'=ROUND(MAX(AC{r}:AD{r},N{r}*12),0)'
+            else:
+                cell_ae.value = f'=ROUND(MAX(AC{r}:AD{r}),0)'
+            _style_data_cell(cell_ae)
             # 行高
             ws.row_dimensions[r].height = 30
 
@@ -673,6 +714,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
         if start_row < current_row - 1:
             ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
             ws.merge_cells(start_row=start_row, start_column=2, end_row=current_row - 1, end_column=2)
+            ws.merge_cells(start_row=start_row, start_column=3, end_row=current_row - 1, end_column=3)
     # ── 设置列宽 ──
     for col_letter, width in COL_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
@@ -713,7 +755,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
     # ── 解析多份发票 ──
     data_rows, service, warehouse = parse_invoice_merge(invoice_files)
-    prefix_to_so = parse_system_export(system_file)
+    prefix_to_so, so_order_times = parse_system_export(system_file)
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
     weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
@@ -754,6 +796,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
         out = {
             'so_no': so_no,
+            'order_time': so_order_times.get(so_no, ''),
             'service': row_svc,
             'country': country_from_warehouse(row_wh),
             'warehouse': row_wh,
