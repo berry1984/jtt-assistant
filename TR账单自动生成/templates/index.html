@@ -355,8 +355,8 @@
       <strong>📎 规则：</strong>
       ① 发票货箱编号 → FBA ID → 匹配系统导出运单号(SO号)<br>
       ② 品名+重量尺寸 → 匹配箱规历史数据库 → 取标准箱规参考值<br>
-      ③ 传了每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价(E列)，匹配不到回退报价表<br>
-      ④ 从报价表自动填充应付单价/供应商渠道等识别信息<br>
+      ③ 报价来源选「JTT每周渠道报价表」并上传 → 按 渠道+仓点+计费重 匹配应收单价(E列)，匹配不到回退报价单<br>
+      ④ 报价来源选「报价单」并上传 → 按报价单匹配 E/F/供应商渠道等识别信息（不传则用服务器默认报价单）<br>
       ⑤ 自动填充公式列(材积重/周长差异/总实重/计费重等)
     </div>
 
@@ -382,34 +382,22 @@
         </div>
       </div>
       <div class="form-group">
-        <label>报价单 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
+        <label>报价来源 <small>(选择上传文件按哪种报价表解析)</small></label>
+        <select name="quotation_source" id="quotationSource" class="format-select"
+                style="height:auto;padding:10px 14px;" onchange="updateQuotationHint()">
+          <option value="quotation" selected>报价单</option>
+          <option value="weekly">JTT每周渠道报价表</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>报价文件 <small>(.xlsx，可选)</small></label>
         <div class="file-input-wrapper" id="pw4">
           <input type="file" name="picking_quotation" accept=".xlsx"
                  onchange="updateLabel(this, 'pw4')">
           <div class="icon">💰</div>
-          <div class="hint">如需更新报价单，上传新文件</div>
+          <div class="hint" id="quotationHint">上传报价单（不传则用服务器默认报价单）</div>
           <div class="filename"></div>
         </div>
-      </div>
-      <div class="form-group">
-        <label>JTT每周渠道报价表 <small>(.xlsx，可选，如「JTT物流每周报价单（26年8月第4周）…」，按 渠道+仓点+计费重 匹配应收单价)</small></label>
-        <div class="file-input-wrapper" id="pw5">
-          <input type="file" name="picking_weekly" accept=".xlsx"
-                 onchange="updateLabel(this, 'pw5')">
-          <div class="icon">📈</div>
-          <div class="hint">上传每周渠道报价表，自动匹配应收单价</div>
-          <div class="filename"></div>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>报价方式 <small>(决定 E列应收单价以哪份报价为准)</small></label>
-        <select name="price_mode" class="format-select" style="height:auto;padding:10px 14px;">
-          <option value="weekly_first" selected>每周报价表优先，匹配不到回退报价表（推荐）</option>
-          <option value="quotation_first">报价表优先，报价表无价时才用每周报价表</option>
-          <option value="weekly_only">仅每周报价表，匹配不到 E列留空</option>
-          <option value="quotation_only">仅报价表，不匹配每周报价表</option>
-        </select>
-        <div style="font-size:12px;color:#888;margin-top:6px;">未上传每周报价表时，此设置不影响结果，E列一律按报价单匹配</div>
       </div>
       <div class="form-group">
         <label>箱规历史数据库 <small>(.xlsx，可选，不传则使用服务器默认)</small></label>
@@ -672,6 +660,15 @@ function updateLabel(input, wrapperId) {
   } else {
     wrapper.classList.remove('has-file');
   }
+}
+// 报价来源切换：同步更新上传框提示文案
+function updateQuotationHint() {
+  const sel = document.getElementById('quotationSource');
+  const hint = document.getElementById('quotationHint');
+  if (!sel || !hint) return;
+  hint.textContent = (sel.value === 'weekly')
+    ? '上传JTT每周渠道报价表（如「JTT物流每周报价单（26年8月第4周）…」，按 渠道+仓点+计费重 匹配应收单价，匹配不到回退报价单）'
+    : '上传报价单（不传则用服务器默认报价单）';
 }
 
 // ── 格式描述 ──

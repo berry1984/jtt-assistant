@@ -453,12 +453,10 @@ def picking_export():
     """
     新规则（2026-06-10）：
     上传 发票 + 系统导出拣货数据 → 匹配箱规历史数据库 → 输出内部拣货数据参考值
-    可选上传 JTT每周渠道报价表 → 按 渠道+仓点+计费重 匹配应收单价（E列）
-    报价方式（price_mode）：
-      - weekly_first    每周报价表优先，匹配不到回退报价表（默认）
-      - quotation_first 报价表优先，报价表有价则用报价表，无价用每周报价表
-      - weekly_only     仅每周报价表，匹配不到 E 列留空
-      - quotation_only  仅报价表，不匹配每周报价表
+    报价来源（quotation_source）：单个报价文件上传，按所选来源解析：
+      - quotation  按报价单解析 E/F/供应商渠道等识别信息（不传用服务器默认报价单）
+      - weekly     按 JTT每周渠道报价表解析，按 渠道+仓点+计费重 匹配应收单价（E列），
+                   匹配不到回退报价单（服务器默认报价单仍提供识别信息）
     """
     sys.path.insert(0, PICKING_DIR)
 
@@ -466,10 +464,14 @@ def picking_export():
     system_file = request.files.get('picking_system')
     history_file = request.files.get('picking_history')
     quotation_file = request.files.get('picking_quotation')
-    weekly_file = request.files.get('picking_weekly')
-    price_mode = (request.form.get('price_mode') or 'weekly_first').strip()
-    if price_mode not in ('weekly_first', 'quotation_first', 'weekly_only', 'quotation_only'):
-        price_mode = 'weekly_first'
+    weekly_file = None
+    quotation_source = (request.form.get('quotation_source') or 'quotation').strip()
+    if quotation_source not in ('quotation', 'weekly'):
+        quotation_source = 'quotation'
+    if quotation_source == 'weekly' and quotation_file and quotation_file.filename:
+        # 来源选「JTT每周渠道报价表」：上传文件按每周报价表解析
+        weekly_file = quotation_file
+        quotation_file = None
 
     if not invoice_files or all(f.filename == '' for f in invoice_files):
         flash('请上传至少一份发票文件')
@@ -519,7 +521,7 @@ def picking_export():
                 flash(f'服务器缺少报价单: {quotation_path}')
                 return redirect('/picking')
 
-        # JTT每周渠道报价表：可选，上传了才用（按 渠道+仓点+计费重 匹配应收单价）
+        # 报价来源=JTT每周渠道报价表：可选，上传了才按每周报价表解析（按 渠道+仓点+计费重 匹配应收单价E列，回退报价单）
         weekly_path = None
         if weekly_file and weekly_file.filename:
             weekly_path = os.path.join(tmp_dir, 'weekly.xlsx')
@@ -530,8 +532,7 @@ def picking_export():
         result, total_boxes = generate_picking_output_multi(invoice_paths, system_path, output_path,
                                                              history_file=history_path,
                                                              quotation_file=quotation_path,
-                                                             weekly_quotation_file=weekly_path,
-                                                             price_mode=price_mode)
+                                                             weekly_quotation_file=weekly_path)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date
