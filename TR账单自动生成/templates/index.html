@@ -464,7 +464,8 @@
 
     <div class="info-box">
       <strong>💰 功能：</strong>上传 6 家固定供应商报价文件 → <strong>云端持久化</strong>（不因刷新/部署丢失），按 <strong>供应商 → 国家 → 渠道</strong> 组织查询<br>
-      <strong>📎 规则：</strong>同供应商同国家再次上传即<strong>覆盖更新</strong> · 支持「➕ 新增供应商」自定义 · 按国家 / 供应商 / 渠道关键词搜索
+      <strong>🚚 类别：</strong>渠道自动识别 <strong>海运 / 空运 / 铁路 / 卡航 / 快递</strong> 运输类别，可分类筛选<br>
+      <strong>📅 每周报价：</strong>单独上传 JTT每周报价表 → 自动加入仓点覆盖渠道价；同槽位再传即覆盖更新
     </div>
 
     <!-- ── 上传 / 覆盖区 ── -->
@@ -496,31 +497,14 @@
       <div id="pqsMsg" style="margin-top:8px;font-size:13px;display:none;"></div>
     </div>
 
-    <!-- ── 新增供应商模块 ── -->
-    <div style="margin-bottom:16px;padding:18px;border:2px solid #c7d2fe;border-radius:12px;background:#eef2ff;">
-      <div style="font-size:15px;font-weight:700;color:#4338ca;margin-bottom:12px;">➕ 新增自定义供应商</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="flex:1;min-width:150px;">
-          <label style="font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:4px;">供应商名称 <span style="color:#c62828;">*</span></label>
-          <input type="text" id="pqsNewName" placeholder="如：顺丰国际" style="width:100%;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;">
-        </div>
-        <div style="flex:1;min-width:240px;">
-          <label style="font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:4px;">国家（可多选） <span style="color:#c62828;">*</span></label>
-          <div id="pqsNewCountries" style="display:flex;gap:12px;flex-wrap:wrap;padding:8px 12px;border:2px solid #d0d5dd;border-radius:10px;background:#fff;font-size:13px;">
-            <label><input type="checkbox" value="美国" checked> 🇺🇸 美国</label>
-            <label><input type="checkbox" value="加拿大"> 🇨🇦 加拿大</label>
-            <label><input type="checkbox" value="欧洲"> 🇪🇺 欧洲</label>
-            <label><input type="checkbox" value="英国"> 🇬🇧 英国</label>
-          </div>
-        </div>
-        <div style="flex:2;min-width:240px;">
-          <label style="font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:4px;">报价文件 <span style="color:#c62828;">*</span></label>
-          <input type="file" id="pqsNewFile" accept=".xlsx,.xls" style="width:100%;padding:8px;border:1px solid #c7d2fe;border-radius:8px;font-size:13px;background:#fff;">
-        </div>
-        <div style="min-width:120px;">
-          <button onclick="pqsAddSupplier()" id="pqsAddBtn" style="width:100%;padding:10px 20px;border:none;border-radius:8px;background:#4338ca;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">➕ 新增</button>
-        </div>
+    <!-- ── JTT每周报价表上传（独立框，覆盖仓点查询的 JTT 渠道价） ── -->
+    <div style="margin-bottom:16px;padding:14px 18px;border:2px dashed #ffb74d;border-radius:12px;background:#fff8f1;">
+      <div style="font-size:14px;font-weight:700;color:#e65100;margin-bottom:8px;">📅 上传 JTT每周报价表</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <input type="file" id="pqsWeeklyFile" accept=".xlsx,.xls" style="flex:1;min-width:220px;padding:8px;border:1px solid #ffb74d;border-radius:8px;font-size:13px;background:#fff;">
+        <button onclick="pqsWeeklyUpload()" id="pqsWeeklyBtn" style="padding:10px 20px;border:none;border-radius:8px;background:#e65100;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">⬆️ 上传</button>
       </div>
+      <div style="font-size:11px;color:#999;margin-top:4px;">每周更新一次，再次上传即覆盖；解析后自动加入仓点覆盖渠道与报价查询</div>
     </div>
 
     <!-- ── 已存报价清单 ── -->
@@ -553,6 +537,14 @@
       <select id="pqSupplier" style="flex:1;min-width:100px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="pqsLoad()">
         <option value="">🏢 全部供应商</option>
       </select>
+      <select id="pqMode" style="flex:1;min-width:90px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="pqsLoad()">
+        <option value="">🚚 全部类别</option>
+        <option value="海运">🚢 海运</option>
+        <option value="空运">✈️ 空运</option>
+        <option value="铁路">🚆 铁路</option>
+        <option value="卡航">🚛 卡航</option>
+        <option value="快递">📦 快递</option>
+      </select>
       <input type="text" id="pqKeyword" placeholder="🔍 搜索渠道名称..." style="flex:2;min-width:150px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;" oninput="pqsDebounce()">
       <button onclick="pqsLoad(true)" style="padding:10px 18px;border:none;border-radius:10px;background:#4f46e5;color:#fff;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">🔄 刷新</button>
     </div>
@@ -563,6 +555,25 @@
     <div id="pqError" style="display:none;padding:16px;border-radius:10px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;margin-bottom:16px;"></div>
     <div id="pqSummary" style="display:none;margin-bottom:16px;"></div>
     <div id="pqResults"></div>
+
+    <!-- ── 仓点查询面板 ── -->
+    <div style="margin-bottom:16px;padding:16px;border:2px solid #ffb74d;border-radius:12px;background:#fff8f1;">
+      <div style="font-size:15px;font-weight:700;color:#e65100;margin-bottom:10px;">📦 仓点查询（FBA 仓点 → 覆盖渠道价）</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <select id="whCountry" style="flex:1;min-width:100px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="whLoad()">
+          <option value="">🌍 全部国家</option>
+          <option value="美国">🇺🇸 美国</option>
+          <option value="加拿大">🇨🇦 加拿大</option>
+          <option value="欧洲">🇪🇺 欧洲</option>
+          <option value="英国">🇬🇧 英国</option>
+        </select>
+        <button onclick="whLoad()" style="padding:10px 18px;border:none;border-radius:10px;background:#e65100;color:#fff;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">🔄 刷新</button>
+        <div style="font-size:12px;color:#999;">点击仓点码展开覆盖渠道 · 角标数字=覆盖渠道数</div>
+      </div>
+      <div id="whLoading" style="text-align:center;padding:24px 0;color:#999;display:none;"><div style="font-size:24px;margin-bottom:6px;">⏳</div><div>正在加载仓点...</div></div>
+      <div id="whError" style="display:none;padding:12px;border-radius:8px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;margin-bottom:10px;"></div>
+      <div id="whResults"></div>
+    </div>
   </div>
 
   <!-- ═══════════════════════════════════════════ -->
@@ -627,7 +638,7 @@ function switchSubTab(parent, sub) {
   document.getElementById('sub-' + parent).style.display = 'flex';
   activateContent(sub);
   // 报价查询 tab 每次激活时加载数据（上传/删除后切走再切回也能刷新）
-  if (sub === 'price_query' && typeof pqsLoad === 'function') pqsLoad();
+  if (sub === 'price_query' && typeof pqsLoad === 'function') { pqsLoad(); if (typeof whLoad === 'function') whLoad(); }
 }
 
 // ── 文件选择 ──
@@ -883,35 +894,110 @@ function pqsUpload() {
     .catch(() => { btn.disabled = false; btn.textContent = '⬆️ 上传 / 覆盖'; showPqsMsg('❌ 网络错误', 'error'); });
 }
 
-// ── 新增自定义供应商 ──
-function pqsAddSupplier() {
-  const name = document.getElementById('pqsNewName').value.trim();
-  const countries = selectedCountries('pqsNewCountries');
-  const fileInput = document.getElementById('pqsNewFile');
+// ── 上传 JTT每周报价表（仓点覆盖渠道来源） ──
+function pqsWeeklyUpload() {
+  const fileInput = document.getElementById('pqsWeeklyFile');
   const file = fileInput.files[0];
-  const btn = document.getElementById('pqsAddBtn');
+  const btn = document.getElementById('pqsWeeklyBtn');
   const msg = document.getElementById('pqsMsg');
-  if (!name) { showPqsMsg('❌ 请填写供应商名称', 'error'); return; }
-  if (!countries.length) { showPqsMsg('❌ 请至少选择一个国家', 'error'); return; }
-  if (!file) { showPqsMsg('❌ 请选择报价文件', 'error'); return; }
+  if (!file) { showPqsMsg('❌ 请选择 JTT每周报价表', 'error'); return; }
 
   const fd = new FormData();
-  fd.append('name', name);
-  for (const c of countries) fd.append('countries', c);
+  fd.append('supplier', 'JTT每周报价');
   fd.append('file', file);
 
-  btn.disabled = true; btn.textContent = '⏳ 新增中...'; msg.style.display = 'none';
-  fetch('/api/price_query/supplier/add', { method: 'POST', body: fd })
+  btn.disabled = true; btn.textContent = '⏳ 上传解析中...'; msg.style.display = 'none';
+  fetch('/api/price_query/upload', { method: 'POST', body: fd })
     .then(r => r.json())
     .then(d => {
-      btn.disabled = false; btn.textContent = '➕ 新增';
+      btn.disabled = false; btn.textContent = '⬆️ 上传';
       if (d.error) { showPqsMsg('❌ ' + d.error, 'error'); return; }
-      showPqsMsg('✅ 已新增供应商「' + d.supplier + '」', 'success');
-      document.getElementById('pqsNewName').value = '';
+      showPqsMsg('✅ JTT每周报价已保存覆盖', 'success');
       fileInput.value = '';
       pqsLoad();
+      whLoad();
     })
-    .catch(() => { btn.disabled = false; btn.textContent = '➕ 新增'; showPqsMsg('❌ 网络错误', 'error'); });
+    .catch(() => { btn.disabled = false; btn.textContent = '⬆️ 上传'; showPqsMsg('❌ 网络错误', 'error'); });
+}
+
+// ── 仓点查询：按国家 → 区域 → 仓点码网格 → 点开覆盖渠道 ──
+let whExpanded = {};
+let whLastData = null;
+
+function whLoad() {
+  const country = document.getElementById('whCountry').value;
+  const loading = document.getElementById('whLoading');
+  const error = document.getElementById('whError');
+  const results = document.getElementById('whResults');
+  loading.style.display = 'block'; error.style.display = 'none'; results.innerHTML = '';
+  let url = '/api/warehouses?';
+  if (country) url += 'country=' + encodeURIComponent(country);
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      loading.style.display = 'none';
+      if (data.error) { error.textContent = '❌ ' + data.error; error.style.display = 'block'; return; }
+      whLastData = data;
+      whRender(data);
+    })
+    .catch(e => { loading.style.display = 'none'; error.textContent = '❌ ' + e.message; error.style.display = 'block'; });
+}
+
+function whExpand(code) {
+  whExpanded[code] = !whExpanded[code];
+  if (whLastData) whRender(whLastData);
+}
+
+function whDetailHtml(p) {
+  const chs = p.channels || [];
+  if (!chs.length) return '<div style="margin-top:6px;padding:8px;background:#fff;border:1px solid #ffe0b2;border-radius:8px;font-size:12px;color:#999;">该仓点暂无已存渠道覆盖</div>';
+  let t = '<div style="margin-top:6px;padding:10px;background:#fff;border:1px solid #ffe0b2;border-radius:8px;">';
+  t += '<div style="font-size:12px;font-weight:700;color:#e65100;margin-bottom:6px;">覆盖渠道（' + chs.length + ' 条，按单价降序）</div>';
+  t += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  t += '<thead><tr style="background:#ff8f00;color:#fff;">';
+  t += '<th style="padding:6px 8px;text-align:left;border:1px solid #ef6c00;">供应商</th>';
+  t += '<th style="padding:6px 8px;text-align:left;border:1px solid #ef6c00;">渠道</th>';
+  t += '<th style="padding:6px 8px;text-align:right;border:1px solid #ef6c00;">单价（¥）</th>';
+  t += '</tr></thead><tbody>';
+  for (const c of chs) {
+    t += '<tr style="border-bottom:1px solid #ffe0b2;">' +
+      '<td style="padding:6px 8px;border:1px solid #ffe0b2;color:#475569;">' + esc(c.supplier) + '</td>' +
+      '<td style="padding:6px 8px;border:1px solid #ffe0b2;color:#37474f;">' + esc(c.name) + '</td>' +
+      '<td style="padding:6px 8px;border:1px solid #ffe0b2;text-align:right;font-weight:600;color:#e65100;">' +
+      (c.price != null ? '¥' + Number(c.price).toFixed(2) : '—') + '</td></tr>';
+  }
+  t += '</tbody></table></div>';
+  return t;
+}
+
+function whRender(data) {
+  const results = document.getElementById('whResults');
+  const countries = Object.keys(data || {});
+  if (!countries.length) { results.innerHTML = '<div style="padding:20px;text-align:center;color:#999;">暂无仓点数据</div>'; return; }
+  let html = '';
+  for (const cn of countries) {
+    html += '<div style="margin-bottom:16px;">';
+    html += '<div style="font-size:14px;font-weight:700;color:#e65100;margin-bottom:8px;">' + flagIcon(cn) + ' ' + cn + '</div>';
+    for (const region of Object.keys(data[cn])) {
+      const pts = data[cn][region];
+      html += '<div style="margin-bottom:10px;">';
+      html += '<div style="font-size:12px;font-weight:600;color:#888;margin-bottom:4px;">▸ ' + esc(region) + '（' + pts.length + ' 个仓点）</div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">';
+      for (const p of pts) {
+        const cov = p.channels.length;
+        html += '<div style="display:inline-block;">' +
+          '<button onclick="whExpand(\'' + escAttr(p.code) + '\')" ' +
+          'style="padding:6px 10px;border:1px solid ' + (cov ? '#ffb74d' : '#e0e0e0') + ';border-radius:8px;' +
+          'background:' + (cov ? '#fff3e0' : '#fafafa') + ';font-size:12px;font-weight:600;cursor:pointer;color:#37474f;">' + esc(p.code) +
+          (cov ? ' <span style="color:#e65100;">' + cov + '</span>' : '') + '</button>' +
+          (whExpanded[p.code] ? whDetailHtml(p) : '') + '</div>';
+      }
+      html += '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  results.innerHTML = html;
 }
 
 // ── 删除槽位 ──
@@ -969,6 +1055,7 @@ function pqsDebounce() { clearTimeout(pqsTimer); pqsTimer = setTimeout(pqsLoad, 
 function pqsLoad() {
   const country = document.getElementById('pqCountry').value;
   const supplier = document.getElementById('pqSupplier').value;
+  const mode = document.getElementById('pqMode').value;
   const keyword = document.getElementById('pqKeyword').value;
   const loading = document.getElementById('pqLoading');
   const error = document.getElementById('pqError');
@@ -981,6 +1068,7 @@ function pqsLoad() {
   let url = '/api/price_query?';
   if (country) url += 'country=' + encodeURIComponent(country) + '&';
   if (supplier) url += 'supplier=' + encodeURIComponent(supplier) + '&';
+  if (mode) url += 'mode=' + encodeURIComponent(mode) + '&';
   if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
 
   fetch(url)
@@ -995,7 +1083,23 @@ function pqsLoad() {
     .catch(e => { loading.style.display = 'none'; error.textContent = '❌ ' + e.message; error.style.display = 'block'; });
 }
 
-// ── 结果渲染：供应商卡片 → 国家 → 渠道表 ──
+// ── 结果渲染：供应商卡片 → 国家 → 渠道表（按运输类别分组） ──
+const MODE_STYLE = {
+  '海运': ['#1565c0', '#e3f2fd'],
+  '空运': ['#00838f', '#e0f7fa'],
+  '铁路': ['#6a1b9a', '#f3e5f5'],
+  '卡航': ['#e65100', '#fff3e0'],
+  '快递': ['#c62828', '#ffebee'],
+  '未知': ['#546e7a', '#eceff1'],
+};
+const MODE_ORDER = ['海运', '空运', '铁路', '卡航', '快递', '未知'];
+
+function modeChip(m) {
+  const st = MODE_STYLE[m] || MODE_STYLE['未知'];
+  return '<span style="display:inline-block;padding:1px 8px;border-radius:10px;background:' + st[1] + ';color:' + st[0] +
+    ';font-size:11px;font-weight:700;border:1px solid ' + st[0] + ';">' + m + '</span>';
+}
+
 function renderSupplierPrices(data) {
   const results = document.getElementById('pqResults');
   const summary = document.getElementById('pqSummary');
@@ -1007,8 +1111,13 @@ function renderSupplierPrices(data) {
   }
 
   summary.style.display = 'block';
+  let chips = '';
+  if (data.mode_stats && Object.keys(data.mode_stats).length) {
+    chips = '<div style="margin-top:6px;">' + Object.keys(data.mode_stats).map(m =>
+      modeChip(m) + '<span style="margin-right:12px;font-weight:700;">' + data.mode_stats[m] + '</span>').join('') + '</div>';
+  }
   summary.innerHTML = '<div style="padding:12px 16px;background:#f0faf6;border-radius:10px;border:1px solid #4ecca3;font-size:13px;">' +
-    '📊 共 <strong>' + data.total_channels + '</strong> 个渠道 · <strong>' + data.suppliers.length + '</strong> 家供应商 · <strong>' + data.countries.length + '</strong> 个国家</div>';
+    '📊 共 <strong>' + data.total_channels + '</strong> 个渠道 · <strong>' + data.suppliers.length + '</strong> 家供应商 · <strong>' + data.countries.length + '</strong> 个国家' + chips + '</div>';
 
   const SUPPLIER_COLORS = {'天图/心一':'#e8f5e9','英美':'#e3f2fd','美琦':'#fff3e0','凯鑫':'#fce4ec','航乐':'#f3e5f5','皓鹏':'#e0f2f1'};
   let html = '';
@@ -1020,6 +1129,10 @@ function renderSupplierPrices(data) {
 
     for (const cn of Object.keys(SUP[sup])) {
       const p = SUP[sup][cn];
+      // 按运输类别分组
+      const groups = {};
+      for (const ch of p.channels) { const m = ch.mode || '未知'; (groups[m] = groups[m] || []).push(ch); }
+      const modeKeys = MODE_ORDER.filter(m => groups[m]);
       html += '<div style="padding:12px 18px;">';
       html += '<div style="font-size:14px;font-weight:600;color:#558b2f;margin-bottom:8px;">' + flagIcon(cn) + ' ' + cn +
         ' <span style="font-weight:400;font-size:12px;color:#888;">生效 ' + esc(p.update_date) + ' · ' + p.channels.length + ' 渠道</span></div>';
@@ -1028,12 +1141,16 @@ function renderSupplierPrices(data) {
       html += '<th style="padding:8px 10px;text-align:left;border:1px solid #1b5e20;">渠道名称</th>';
       html += '<th style="padding:8px 10px;text-align:right;border:1px solid #1b5e20;">单价（¥）</th>';
       html += '</tr></thead><tbody>';
-      for (const ch of p.channels) {
-        html += '<tr style="border-bottom:1px solid #c8e6c9;">';
-        html += '<td style="padding:7px 10px;border:1px solid #c8e6c9;color:#1b5e20;">' + esc(ch.name) + '</td>';
-        html += '<td style="padding:7px 10px;border:1px solid #c8e6c9;text-align:right;font-weight:600;color:#2e7d32;">' +
-          (ch.price !== null && ch.price !== undefined ? '¥' + Number(ch.price).toFixed(2) : '—') + '</td>';
-        html += '</tr>';
+      for (const m of modeKeys) {
+        html += '<tr><td colspan="2" style="padding:5px 10px;background:' + (MODE_STYLE[m] || MODE_STYLE['未知'])[1] + ';border:1px solid #c8e6c9;">' +
+          modeChip(m) + '<span style="font-size:12px;color:' + (MODE_STYLE[m] || MODE_STYLE['未知'])[0] + ';">' + groups[m].length + ' 个渠道</span></td></tr>';
+        for (const ch of groups[m]) {
+          html += '<tr style="border-bottom:1px solid #c8e6c9;">';
+          html += '<td style="padding:7px 10px;border:1px solid #c8e6c9;color:#1b5e20;">' + esc(ch.name) + '</td>';
+          html += '<td style="padding:7px 10px;border:1px solid #c8e6c9;text-align:right;font-weight:600;color:#2e7d32;">' +
+            (ch.price !== null && ch.price !== undefined ? '¥' + Number(ch.price).toFixed(2) : '—') + '</td>';
+          html += '</tr>';
+        }
       }
       html += '</tbody></table></div>';
     }
@@ -1043,7 +1160,12 @@ function renderSupplierPrices(data) {
 }
 
 // 自动加载
-(function() { if (document.getElementById('tab-price_query')?.classList.contains('active')) pqsLoad(); })();
+(function() {
+  if (document.getElementById('tab-price_query')?.classList.contains('active')) {
+    pqsLoad();
+    if (typeof whLoad === 'function') whLoad();
+  }
+})();
 </script>
 </body>
 </html>

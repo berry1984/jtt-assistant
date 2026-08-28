@@ -658,7 +658,9 @@ def generate_bl_docs_route():
 # ═══════════════════════════════════════════
 #  功能7：报价查询（固定供应商 + 自定义 + 云端持久化）
 # ═══════════════════════════════════════════
-from price_supplier import save_upload, add_custom_supplier, delete_slot, list_slots, query
+from price_supplier import (save_upload, add_custom_supplier, delete_slot,
+                            list_slots, query, load_prices)
+from warehouse_points import query_warehouses
 
 
 @app.route('/price_query', methods=['GET'])
@@ -668,12 +670,29 @@ def price_query_page():
 
 @app.route('/api/price_query', methods=['GET'])
 def price_query_api():
-    """供应商报价查询：按 供应商 → 国家 → 渠道 组织，支持按国家/供应商/渠道关键词过滤。"""
+    """供应商报价查询：按 供应商 → 国家 → 渠道 组织，支持国家/供应商/关键词/运输类别过滤。"""
     keyword = request.args.get('keyword', '').strip()
     country = request.args.get('country', '').strip()
     supplier = request.args.get('supplier', '').strip()
+    mode = request.args.get('mode', '').strip()
     try:
-        data = query(keyword=keyword, country=country, supplier=supplier)
+        data = query(keyword=keyword, country=country, supplier=supplier, mode=mode)
+        return app.response_class(
+            response=json.dumps(data, ensure_ascii=False),
+            mimetype='application/json; charset=utf-8'
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
+@app.route('/api/warehouses', methods=['GET'])
+def warehouses_api():
+    """仓点查询：国家 → 按区域分组仓点码，点开看覆盖渠道价。"""
+    country = request.args.get('country', '').strip()
+    try:
+        data = query_warehouses(load_prices(), country)
         return app.response_class(
             response=json.dumps(data, ensure_ascii=False),
             mimetype='application/json; charset=utf-8'

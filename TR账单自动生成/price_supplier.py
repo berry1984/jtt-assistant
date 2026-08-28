@@ -16,11 +16,21 @@ import os
 import re
 import json
 import shutil
+import sys
 from datetime import datetime
 
-from supplier_parser import parse_supplier_files, _extract_date_from_filename
-
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+# app.py 会把 /Users/admin/报价工具 插到 sys.path[0]（仅供 ym_cost），其下也有旧的
+# supplier_parser.py，会遮蔽本目录的版本。这里把本目录重新置顶，保证用本地增强版。
+if THIS_DIR not in sys.path:
+    sys.path.insert(0, THIS_DIR)
+elif sys.path[0] != THIS_DIR:
+    sys.path.remove(THIS_DIR)
+    sys.path.insert(0, THIS_DIR)
+
+from supplier_parser import parse_supplier_files, _extract_date_from_filename, classify_transport
+from warehouse_points import (WEEKLY_SUPPLIER_NAME, WEEKLY_COUNTRY,
+                              extract_warehouse_coverage, _load_weekly_module)
 
 FIXED_SUPPLIERS = ["天图/心一", "英美", "美琦", "凯鑫", "航乐", "皓鹏"]
 COUNTRIES = ["美国", "加拿大", "欧洲", "英国"]
@@ -151,10 +161,11 @@ def _is_real_channel(name):
 
 
 def _parse_file(fp):
-    """解析单个报价文件 → {update_date, channels:[{name, price}]}，去噪声、按名排序。"""
+    """解析单个报价文件 → {update_date, channels:[{name, price, mode}], warehouses}，去噪声、按名排序。"""
     p = parse_supplier_files([fp], region_filter=False)
     if not p:
         return None
+    ch_sheets = p.get("channel_sheets") or {}
     chs = []
     for name, price in p.get("channels", {}).items():
         if not _is_real_channel(name):
@@ -163,12 +174,41 @@ def _parse_file(fp):
             pv = round(float(price), 2)
         except (ValueError, TypeError):
             pv = None
-        chs.append({"name": name, "price": pv})
+        chs.append({"name": name, "price": pv,
+                    "mode": classify_transport(name, ch_sheets.get(name, ""))})
     chs.sort(key=lambda c: c["name"])
     update_date = p.get("update_date", "") or ""
     if not update_date:
         update_date = _extract_date_from_filename(fp) or ""
-    return {"update_date": update_date, "channels": chs}
+    return {"update_date": update_date, "channels": chs,
+            "warehouses": extract_warehouse_coverage(fp)}
+
+
+def _parse_weekly_slot(fp):
+    """解析 JTT每周报价表（格式不同，走 weekly_quotation）→ {update_date, channels, wh_entries}。"""
+    wq = _load_weekly_module()
+    entries = wq.parse_weekly_quotation(fp)
+    if not entries:
+        return None
+    channels = []
+    seen = {}
+    for e in entries:
+        key = (e.get('section'), e.get('channel_raw') or e.get('channel'))
+        price = wq.pick_tier_price(e.get("tiers") or {}, 10 ** 6)
+        pv = round(price, 2) if price is not None else None
+        if key in seen:
+            if pv is not None and (seen[key]['price'] is None or pv > seen[key]['price']):
+                seen[key]['price'] = pv
+            continue
+        name = e.get('channel_raw') or e.get('channel') or ''
+        d = {"name": name, "price": pv,
+             "section": e.get('section', ''),
+             "mode": classify_transport(name, e.get('section', ''))}
+        seen[key] = d
+        channels.append(d)
+    channels.sort(key=lambda c: c["name"])
+    update_date = _extract_date_from_filename(fp) or ""
+    return {"update_date": update_date, "channels": channels, "wh_entries": entries}
 
 
 def list_custom_suppliers():
@@ -180,7 +220,7 @@ def list_custom_suppliers():
     for slug in sorted(os.listdir(root)):
         if os.path.isdir(os.path.join(root, slug)):
             display = _read_supplier_meta(slug)
-            if display not in FIXED_SUPPLIERS and display not in out:
+            if display not in FIXED_SUPPLIERS and display != WEEKLY_SUPPLIER_NAME and display not in out:
                 out.append(display)
     return sorted(out)
 
@@ -197,13 +237,15 @@ def list_slots():
             continue
         display = _read_supplier_meta(slug)
         for country in sorted(os.listdir(sdir)):
-            if country in COUNTRIES:
+            is_weekly = display == WEEKLY_SUPPLIER_NAME and country == WEEKLY_COUNTRY
+            if country in COUNTRIES or is_weekly:
                 fp = _find_slot_file(display, country)
                 if fp:
                     meta = _read_meta(display, country)
                     # 用 meta 直出，避免每个槽位重复解析大文件；仅旧槽位无 meta 时才回退解析
                     if not meta.get("channel_count") or not meta.get("update_date"):
-                        parsed = _parse_file(fp) or {"update_date": "", "channels": []}
+                        parsed = (_parse_weekly_slot(fp) if is_weekly else _parse_file(fp)) \
+                            or {"update_date": "", "channels": []}
                         meta = dict(meta, update_date=parsed["update_date"],
                                     channel_count=len(parsed["channels"]),
                                     uploaded_at=meta.get("uploaded_at", ""))
@@ -211,7 +253,7 @@ def list_slots():
                         _write_meta(display, country, meta)
                     slots.append({
                         "supplier": display,
-                        "country": country,
+                        "country": "每周" if is_weekly else country,
                         "source_filename": os.path.basename(fp),
                         "uploaded_at": meta.get(
                             "uploaded_at",
@@ -219,7 +261,7 @@ def list_slots():
                         ),
                         "update_date": meta.get("update_date", ""),
                         "channel_count": meta.get("channel_count", ""),
-                        "custom": display not in FIXED_SUPPLIERS,
+                        "custom": display not in FIXED_SUPPLIERS and not is_weekly,
                     })
     return slots
 
@@ -230,22 +272,22 @@ def save_upload(supplier, countries, file):
     注意：FileStorage 流只能 save 一次，其余国家用 shutil.copy 复制。
     """
     supplier = (supplier or "").strip()
-    if supplier not in FIXED_SUPPLIERS and supplier not in list_custom_suppliers():
+    is_weekly = supplier == WEEKLY_SUPPLIER_NAME
+    if not is_weekly and supplier not in FIXED_SUPPLIERS and supplier not in list_custom_suppliers():
         return {"error": f"供应商「{supplier}」不存在，请先用「新增供应商」创建"}
     if not file or file.filename == "":
         return {"error": "请选择报价文件"}
     if not file.filename.lower().endswith((".xlsx", ".xls")):
         return {"error": "文件需要是 .xlsx / .xls"}
-    if not countries:
+    if not countries and not is_weekly:
         return {"error": "请至少选择一个国家"}
 
     _write_supplier_meta(supplier)
     source_filename = file.filename
     saved = []
     first_fp = None
-    for country in countries:
-        if country not in COUNTRIES:
-            continue
+    target_countries = [WEEKLY_COUNTRY] if is_weekly else [c for c in countries if c in COUNTRIES]
+    for country in target_countries:
         d = os.path.join(_sup_dir(supplier), country)
         os.makedirs(d, exist_ok=True)
         for fn in os.listdir(d):
@@ -263,7 +305,8 @@ def save_upload(supplier, countries, file):
         saved.append(country)
 
     # 只解析一次（多国是同一文件），共享结果写各槽位 meta
-    parsed = _parse_file(first_fp) or {"update_date": "", "channels": []}
+    parsed = (_parse_weekly_slot(first_fp) if is_weekly else _parse_file(first_fp)) \
+        or {"update_date": "", "channels": []}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for country in saved:
         meta = {
@@ -325,11 +368,12 @@ def load_prices():
             display = _read_supplier_meta(slug)
             sub = {}
             for country in sorted(os.listdir(sdir)):
-                if country not in COUNTRIES:
+                is_weekly = display == WEEKLY_SUPPLIER_NAME and country == WEEKLY_COUNTRY
+                if country not in COUNTRIES and not is_weekly:
                     continue
                 fp = _find_slot_file(display, country)
                 if fp:
-                    p = _parse_file(fp)
+                    p = _parse_weekly_slot(fp) if is_weekly else _parse_file(fp)
                     if p:
                         sub[country] = p
             if sub:
@@ -340,13 +384,15 @@ def load_prices():
     return data
 
 
-def query(keyword="", country="", supplier=""):
-    """供应商报价查询：按 供应商 → 国家 → 渠道 组织，支持过滤。"""
+def query(keyword="", country="", supplier="", mode=""):
+    """供应商报价查询：按 供应商 → 国家 → 渠道 组织，支持国家/供应商/关键词/运输类别过滤。"""
     kw = (keyword or "").strip().lower()
+    md = (mode or "").strip()
     data = load_prices()
     result = {}
     countries_used = set()
     total_channels = 0
+    mode_stats = {}
     for sup in data:
         if supplier and sup != supplier:
             continue
@@ -357,10 +403,18 @@ def query(keyword="", country="", supplier=""):
             chs = p["channels"]
             if kw:
                 chs = [c for c in chs if kw in c["name"].lower()]
+            if md:
+                chs = [c for c in chs if (c.get("mode") or "未知") == md]
+            # JTT 每周报价按分区（美国渠道/加拿大渠道/欧线渠道/英国渠道）过滤国家
+            if country and sup == WEEKLY_SUPPLIER_NAME:
+                chs = [c for c in chs if country in (c.get("section") or "")]
             if not chs:
                 continue
             countries_used.add(cn)
             total_channels += len(chs)
+            for c in chs:
+                m = c.get("mode") or "未知"
+                mode_stats[m] = mode_stats.get(m, 0) + 1
             sub[cn] = {"update_date": p["update_date"], "channels": chs}
         if sub:
             result[sup] = sub
@@ -370,5 +424,6 @@ def query(keyword="", country="", supplier=""):
         "fixed_suppliers": FIXED_SUPPLIERS,
         "custom_suppliers": list_custom_suppliers(),
         "total_channels": total_channels,
+        "mode_stats": mode_stats,
         "data": result,
     }

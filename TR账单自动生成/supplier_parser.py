@@ -88,6 +88,7 @@ def parse_supplier_files(filepaths, region_filter=True):
     all_channels = {}
     update_dates = []
     info_parts = []
+    ch_sheets_all = {}
 
     for fp in filepaths:
         parsed = _parse_single_workbook(fp)
@@ -107,6 +108,10 @@ def parse_supplier_files(filepaths, region_filter=True):
                     pass
             else:
                 all_channels[ch] = price
+        # 记录渠道首次出现的 sheet（用于运输类别判定）
+        for ch, sname in (parsed.get("channel_sheets") or {}).items():
+            if ch not in ch_sheets_all:
+                ch_sheets_all[ch] = sname
 
     if not all_channels:
         return None
@@ -115,6 +120,7 @@ def parse_supplier_files(filepaths, region_filter=True):
         "supplier_info": " | ".join(p for p in info_parts if p),
         "update_date": max(update_dates) if update_dates else "",
         "channels": all_channels,
+        "channel_sheets": ch_sheets_all,
     }
 
 
@@ -151,6 +157,7 @@ def _parse_single_workbook(filepath):
         return None
 
     channels = {}
+    ch_sheets = {}
     update_date = _extract_date_from_filename(filepath)
 
     for sheet_name in wb.sheetnames:
@@ -166,6 +173,8 @@ def _parse_single_workbook(filepath):
 
         sheet_channels = _parse_sheet_rows(rows, sheet_name)
         for ch, price in sheet_channels.items():
+            if ch not in ch_sheets:
+                ch_sheets[ch] = sheet_name  # 记录渠道首次出现的 sheet（运输类别判定用）
             if ch in channels:
                 try:
                     channels[ch] = max(float(channels[ch]), float(price))
@@ -188,6 +197,7 @@ def _parse_single_workbook(filepath):
         "supplier_info": f"{supplier} {update_date}".strip(),
         "update_date": update_date,
         "channels": channels,
+        "channel_sheets": ch_sheets,
     }
 
 
@@ -521,6 +531,51 @@ def _normalize_channel(name):
         return ""
     first_line = name.split("\n")[0].strip()
     return re.sub(r"\s+", " ", first_line)
+
+
+# ── 渠道运输类别（海运/空运/铁路/卡航/快递） ──
+
+# 主运输词优先级判定（命中即停）：快递派/卡派 等是派送方式，不影响主运输类别。
+# 不用单字「铁/船」以免多模式 sheet（如「空卡铁海」）误判。
+_TRANSPORT_MODES = [
+    ("海运", ["海运", "海派", "海卡", "普船", "直航", "快航", "美森", "以星",
+              "合德", "统配", "EXX", "CLX", "OA", "MAX", "中远", "COSCO", "ZIM"]),
+    ("空运", ["空运", "空派", "航空", "五日提", "十日提"]),
+    ("铁路", ["铁路", "铁卡", "快铁", "中欧", "中英铁"]),
+    ("卡航", ["卡航", "卡派", "专车", "卡车", "陆运", "苏新号"]),
+    ("快递", ["快递", "DHL", "FEDEX", "UPS", "DPD", "闪送", "快递派", "派送",
+              "快线", "超快线"]),
+]
+
+# 单字运输动词（sheet 回退用：仅当 sheet 只有一个明确运输动词才判定）
+_SHEET_VERBS = {'空': '空运', '海': '海运', '铁': '铁路', '卡': '卡航',
+                '陆': '卡航', '车': '卡航', '船': '海运'}
+
+TRANSPORT_MODES = [m for m, _ in _TRANSPORT_MODES] + ["未知"]
+
+
+def classify_transport(name, sheet=''):
+    """判定渠道运输类别：海运/空运/铁路/卡航/快递/未知。
+
+    渠道名优先（主运输词按优先级，命中即返回）；渠道名无主运输词时回退 sheet 名：
+    先按明确主运输词（海运>空运>铁路>卡航>快递），再按单字运输动词
+    （仅当 sheet 只有一种动词，避免「空卡铁海」等多模式 sheet 误判）。
+    """
+    text = (name or "").upper()
+    for mode, kws in _TRANSPORT_MODES:
+        for kw in kws:
+            if kw in text:
+                return mode
+
+    sheet_text = (sheet or "").upper()
+    if sheet_text:
+        for mode, kws in _TRANSPORT_MODES:
+            if any(kw in sheet_text for kw in kws):
+                return mode
+        found = {_SHEET_VERBS[c] for c in sheet_text if c in _SHEET_VERBS}
+        if len(found) == 1:
+            return found.pop()
+    return "未知"
 
 
 def _is_huanan_channel(channel_name):
