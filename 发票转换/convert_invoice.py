@@ -642,16 +642,16 @@ def convert_to_tiantu(tr, output_path, image_url_base=None, order_list_path=None
         set_cell('O', r, dr['B'] if dr['B'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
-        # P: 货箱长度(CM)
-        set_cell('P', r, dr['C'] if dr['C'] is not None else '',
+        # P: 货箱长度(CM) —— 提取规则：45.6→45、45.5→44.5（见 _apply_dim_rule）
+        set_cell('P', r, _apply_dim_rule(dr['C']) if dr['C'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
         # Q: 货箱宽度(CM)
-        set_cell('Q', r, dr['D'] if dr['D'] is not None else '',
+        set_cell('Q', r, _apply_dim_rule(dr['D']) if dr['D'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
         # R: 货箱高度(CM)
-        set_cell('R', r, dr['E'] if dr['E'] is not None else '',
+        set_cell('R', r, _apply_dim_rule(dr['E']) if dr['E'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
     num_data_rows = len(tr.data_rows)
@@ -858,10 +858,8 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
         box_count = parse_box_count(dr['A'])
         total_qty = qty * box_count
 
-        # 尺寸 — 取整（匹配正确版本做法）
-        length_cm = int(dr['C']) if dr['C'] else 0
-        width_cm = int(dr['D']) if dr['D'] else 0
-        height_cm = int(dr['E']) if dr['E'] else 0
+        # 尺寸 — 应用提取规则（45.6→45、45.5→44.5），材重/CBM 与显示尺寸保持一致
+        length_cm, width_cm, height_cm = _row_dims(dr)
 
         # 材重除数：欧洲 6000，英国 5000
         vol_div = 6000 if region == 'eu' else 5000
@@ -930,9 +928,7 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
     vol_wts = []
     cbms = []
     for dr in tr.data_rows:
-        l = int(dr['C']) if dr['C'] else 0
-        w = int(dr['D']) if dr['D'] else 0
-        h = int(dr['E']) if dr['E'] else 0
+        l, w, h = _row_dims(dr)
         if l and w and h:
             vol_wts.append(l * w * h / vol_div)
             cbms.append(l * w * h / 1000000)
@@ -987,6 +983,35 @@ def _parse_box_count(box_no):
         return 1
     m = re.search(r'-(\d+)$', str(box_no))
     return int(m.group(1)) if m else 1
+
+
+def _apply_dim_rule(value, rule='general'):
+    """长宽高提取规则（填入目标发票的尺寸值）。
+
+    rule='general'：小数点后第一位 >5 → 直接舍掉小数（45.6→45）；
+                    否则去掉小数后 整体 -0.5（45.5→44.5，45.0→44.5）。
+    输入 None/空 或非数值 → 原样返回（由调用方决定填 ''）。
+    """
+    if value is None or str(value).strip() == '':
+        return value
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return value
+    int_part = int(num)
+    first_dec = int(abs(num) * 10) % 10  # 小数点后第一位
+    if first_dec > 5:
+        return int_part
+    return int_part - 0.5
+
+
+def _row_dims(dr, rule='general'):
+    """返回应用提取规则后的 (长, 宽, 高)，None→0（尺寸写入及 材重/CBM 计算共用）。"""
+    return (
+        _apply_dim_rule(dr['C'], rule) or 0,
+        _apply_dim_rule(dr['D'], rule) or 0,
+        _apply_dim_rule(dr['E'], rule) or 0,
+    )
 
 
 def _format_hs_code(val):
@@ -1424,9 +1449,9 @@ def convert_to_meiqi(tr, output_path, order_list_path=None, expected_station=Non
         ws.cell(row=r, column=4).value = dr['I'] if dr['I'] is not None else ''   # D: 申报数量（单箱）
         ws.cell(row=r, column=5).value = dr['H'] if dr['H'] is not None else ''   # E: 申报单价（美金）
         ws.cell(row=r, column=6).value = dr['B'] if dr['B'] is not None else ''   # F: 货箱重量
-        ws.cell(row=r, column=7).value = dr['C'] if dr['C'] is not None else ''   # G: 货箱长度
-        ws.cell(row=r, column=8).value = dr['D'] if dr['D'] is not None else ''   # H: 货箱宽度
-        ws.cell(row=r, column=9).value = dr['E'] if dr['E'] is not None else ''   # I: 货箱高度
+        ws.cell(row=r, column=7).value = _apply_dim_rule(dr['C']) if dr['C'] is not None else ''   # G: 货箱长度（45.6→45、45.5→44.5）
+        ws.cell(row=r, column=8).value = _apply_dim_rule(dr['D']) if dr['D'] is not None else ''   # H: 货箱宽度
+        ws.cell(row=r, column=9).value = _apply_dim_rule(dr['E']) if dr['E'] is not None else ''   # I: 货箱高度
         ws.cell(row=r, column=10).value = dr['K'] if dr['K'] is not None else ''  # J: 海关编码（源原值，不改变格式/不加小数点）
         ws.cell(row=r, column=11).value = dr['M'] if dr['M'] is not None else ''  # K: 品牌
         ws.cell(row=r, column=12).value = dr['J'] if dr['J'] is not None else ''  # L: 材质
