@@ -49,7 +49,8 @@ ZIP：`提单电放保函_{YYYYMMDD_HHMMSS}.zip`
 - **字体**：Arial 10.5（替代原 Calibri/SimSun）；跨平台回退 macOS Arial → Linux Liberation/DejaVu → helv
 - **长文本**：超框自动缩小字号（船名航次等）
 - **KGS**：显示为 `{值}\nKGS`，插入点右移避免遮挡蓝线
-- **电放保函**：A16/A18 为固定标签文案，不写入 shipper/consignee 变量
+- **中段布局**：place_rcpt/port_load 用 9.5 号、vessel 8.0，baseline 上移至单元格中上部，避免 descender 穿过蓝色边框
+- **电放保函**：A16/A18 合并 A:I 单元格，写入数据中的完整 shipper/consignee（名称+地址，换行显示）；E16/E18 模板内置公司名已清除，避免重复
 
 ## Web 接口
 

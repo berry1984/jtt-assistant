@@ -336,8 +336,25 @@ def _gen_telex(shipment, out_dir, jtt_part=None, total_cartons=None):
     ws['E10'] = bl_no
     ws['E12'] = f'{vessel}/{voy}' if voy else vessel
     ws['E14'] = container
-    ws['A16'] = 'Shipper （发货人）                   :'
-    ws['A18'] = 'Consignee （收货人）               :   '
+
+    # Shipper / Consignee — 写入数据中的完整信息（名称+地址，多行换行显示），
+    # 避免只显示模板内置的第一行公司名导致"信息不全"
+    shipper_full = _safe_str(shipment.get('Shipper', '')).strip()
+    consignee_full = _safe_str(shipment.get('Consignee', '')).strip()
+    if shipper_full:
+        ws.merge_cells('A16:I16')
+        ws['A16'] = f'Shipper （发货人）: {shipper_full}'
+        ws['A16'].alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[16].height = 42
+    else:
+        ws['A16'] = 'Shipper （发货人）                   :'
+    if consignee_full:
+        ws.merge_cells('A18:I18')
+        ws['A18'] = f'Consignee （收货人）: {consignee_full}'
+        ws['A18'].alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[18].height = 42
+    else:
+        ws['A18'] = 'Consignee （收货人）               :   '
 
     if isinstance(collect_date, datetime):
         m, d, y = collect_date.month, collect_date.day, collect_date.year
@@ -396,21 +413,21 @@ def _sea_train_fields(is_train=False):
     if is_train:
         clear_rects.append((52, 314, 249, 326))
 
-    # 字体大小参照模板:
-    #   Calibri 10.6 → 改为 Arial 10.5（place_rcpt, port_load, port_disc, place_delv）
-    #   SimSun 10.5  → Arial 10.5（bl_no, container, notify_party）
-    #   SimSun 7.5   → Arial 10.5（vessel — 用户要求）
-    #   ArialMT 9    → Arial 9（marks, cartons, desc, cbm, dates）
-    #   Calibri 10.5 → Arial 10.5（kgs 数值部分）
+    # 字体大小参照模板（baseline 取在单元格中上部，避免 descender 穿过下边框）:
+    #   place_rcpt / port_load: 9.5（模板 Calibri 10.6 → 缩小以保边框）
+    #   vessel:                  8.0（模板 SimSun 7.5；超宽自动缩小）
+    #   port_disc / place_delv: 10.5
+    #   bl_no / container / notify_party: 10.5
+    #   ArialMT 9 → marks/cartons/cbm/dates 9；desc/kgs 10.5
     #   第5项 max_width（点）— 超出则自动缩小字号
     text_inserts = [
         ((428, 67),   'bl_no',        10.5, 85),
         ((56, 267),   'notify_party', 10.5, 190),
-        ((161, 298),  'place_rcpt',   10.5, 85),
-        ((52, 322),   'vessel',       10.5, 98),
-        ((161, 325),  'port_load',    10.5, 85),
-        ((52, 352),   'port_disc',    10.5, 100),
-        ((161, 352),  'place_delv',   10.5, 105),
+        ((161, 296),  'place_rcpt',    9.5, 85),
+        ((52, 320.5), 'vessel',        8.0, 104),
+        ((161, 322),  'port_load',     9.5, 85),
+        ((52, 350.5), 'port_disc',    10.5, 100),
+        ((161, 350.5), 'place_delv',  10.5, 90),
         ((56, 544),   'container',    10.5, 60),
         ((77, 395),   'marks',        9,    58),
         ((130, 395),  'cartons',      9,    78),
