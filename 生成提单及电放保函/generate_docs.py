@@ -9,7 +9,8 @@
 - 文件名格式：JTT号+渠道+箱数+提单/电放保函.后缀
 """
 
-import os, sys
+import os, sys, re
+from collections import defaultdict
 from datetime import datetime, timedelta
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
@@ -24,7 +25,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, 'output_5月')
 BL_SEA_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By sea.pdf')
 BL_TRUCK_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By truck.pdf')
 BL_TRAIN_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By train.pdf')
-TELEX_TEMPLATE = os.path.join(TEMPLATE_DIR, '电放保函.xlsx')
+TELEX_TEMPLATE = os.path.join(TEMPLATE_DIR, '电放保函模板.xlsx')
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -63,27 +64,87 @@ def sanitize_filename(s):
     return s
 
 
+def _split_jtt_cell(raw):
+    """拆分 JTT no. 单元格中的多个单号。
+
+    单元格可能是一个单号，也可能是多个单号用逗号/顿号/斜杠/空格/换行等分隔：
+        "JTT202605000328"                        → ['JTT202605000328']
+        "JTT202605000328,340,330,331,334,335"    → ['JTT202605000328','JTT202605000340',...]
+    裸序号（无 JTT 前缀）自动补全基础前缀。
+    """
+    parts = [p.strip() for p in re.split(r'[,，、;；/\s]+', str(raw)) if p.strip()]
+    if not parts:
+        return []
+    # 只有首段是 JTT 编号才算 JTT 单元格；备注说明行（首段如 "2."/"备注"）原样返回
+    if not parts[0].startswith('JTT'):
+        return parts
+    # 基础前缀：JTT + YYYYMM + "000"（12 位，与 _fmt_jtts 的 PREFIX_LEN 一致）
+    base = parts[0][:12]
+    return [p if p.startswith('JTT') else base + p for p in parts]
+
+
 def load_shipments():
     wb = openpyxl.load_workbook(DATA_FILE, data_only=True)
     ws = wb['5月提单信息']
     headers = []
     for c in list(ws.iter_rows(min_row=1, max_row=1))[0]:
         headers.append(c.value)
+
+    # ── 向下填充：同组空白行继承上行的 B/L No / 渠道 / 模板 / 船名航次等 ──
+    FILL_DOWN_COLS = {
+        'B/L No.', '引用模板', '渠道',
+        'Ocean Vessel', 'Voy.No',
+        'Place of receipt', 'Port of loading',
+        'Port of discharge', 'Place of delivery',
+        'Container no.', 'collect',
+        'Place and date of issue', 'on board date',
+        'Shipper', 'Consignee', 'Notify party',
+    }
+    fill_cache = {}
+
     shipments = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         d = dict(zip(headers, row))
-        jtt_no = _safe_str(d.get('JTT no.', ''))
-        template = _safe_str(d.get('引用模板', ''))
-        if not jtt_no or not template:
+        raw_jtt = _safe_str(d.get('JTT no.', '')).strip()
+        if not raw_jtt:
+            continue  # 完全空行直接跳过
+        # 拆分单元格中的多个单号
+        jtt_nos = _split_jtt_cell(raw_jtt)
+        if not jtt_nos:
+            continue
+        # 跳过非 JTT 编号的行（如底部备注说明行）
+        if not jtt_nos[0].startswith('JTT'):
+            continue
+
+        # 向下填充：属于填充列表且当前为 None 的列，从上一条缓存取值
+        for col_name in FILL_DOWN_COLS:
+            if col_name in d and d[col_name] is None and col_name in fill_cache:
+                d[col_name] = fill_cache[col_name]
+            elif col_name in d and d[col_name] is not None:
+                fill_cache[col_name] = d[col_name]
+
+        template = _safe_str(d.get('引用模板', '')).strip()
+        if not template:
             continue
         if _safe_str(d.get('Place of receipt', '')).strip() == '查验':
-            print(f'  ⏭ 跳过查验: {jtt_no}')
+            print(f'  ⏭ 跳过查验: {raw_jtt}')
             continue
         bl_no = _safe_str(d.get('B/L No.', '')).strip()
         if not bl_no:
-            print(f'  ⏭ 跳过无提单号: {jtt_no}')
+            print(f'  ⏭ 跳过无提单号: {raw_jtt}')
             continue
-        shipments.append(d)
+
+        # 单元格含多个单号 → 拆分为多票；箱数/KGS/CBM 只在首个单号保留，
+        # 避免同 B/L 合并时重复累加
+        for i, jtt in enumerate(jtt_nos):
+            item = dict(d)
+            item['JTT no.'] = jtt
+            if i > 0:
+                item['cartons'] = 0
+                item['KGS'] = 0
+                item['CBM'] = 0
+            shipments.append(item)
+
     wb.close()
     return shipments
 
@@ -100,23 +161,20 @@ def _get_template_path(template_type):
 # ============================================================
 # 1. 电放保函 (Telex Release) — .xlsx
 # ============================================================
-def generate_telex(shipment):
+def generate_telex(shipment, jtt_part=None, total_cartons=None):
     if not os.path.exists(TELEX_TEMPLATE):
         print(f'  ❌ 找不到电放保函模板')
         return None
-    jtt_no = _safe_str(shipment.get('JTT no.', ''))
+    jtt_no = jtt_part or _safe_str(shipment.get('JTT no.', ''))
     channel = _safe_str(shipment.get('渠道', ''))
-    cartons = shipment.get('cartons', 0) or 0
+    cartons = total_cartons if total_cartons is not None else (shipment.get('cartons', 0) or 0)
     bl_no = _safe_str(shipment.get('B/L No.', ''))
     vessel = _safe_str(shipment.get('Ocean Vessel', ''))
     voy = _safe_str(shipment.get('Voy.No', ''))
     container = _safe_str(shipment.get('Container no.', ''))
     collect_date = fmt_date(shipment.get('collect', ''))
-    # 公司名只取第一行，不要地址
-    shipper_name = _safe_str(shipment.get('Shipper', '')).split('\n')[0].strip()
-    consignee_name = _safe_str(shipment.get('Consignee', '')).split('\n')[0].strip()
 
-    fname = f'{jtt_no}{sanitize_filename(channel)}{cartons}电放保函.xlsx'
+    fname = f'{jtt_no}{sanitize_filename(channel)}{cartons}件电放保函.xlsx'
     out_path = os.path.join(OUTPUT_DIR, fname)
 
     wb = openpyxl.load_workbook(TELEX_TEMPLATE)
@@ -128,9 +186,9 @@ def generate_telex(shipment):
     ws['E12'] = vessel_str
     ws['E14'] = container
 
-    # Shipper/Consignee — 保留模板原有标签前缀，只换公司名
-    ws['A16'] = f'Shipper （发货人）                   :      {shipper_name}'
-    ws['A18'] = f'Consignee （收货人）              :    {consignee_name}'
+    # Shipper/Consignee — 固定标签文案（与 Web 模块一致，不写 shipper/consignee 变量）
+    ws['A16'] = 'Shipper （发货人）                   :'
+    ws['A18'] = 'Consignee （收货人）               :   '
 
     # 日期
     if isinstance(collect_date, datetime):
@@ -143,8 +201,6 @@ def generate_telex(shipment):
 
     wb.save(out_path)
     wb.close()
-    print(f'  ✅ 电放保函: {fname}')
-    return out_path
     print(f'  ✅ 电放保函: {fname}')
     return out_path
 
@@ -185,7 +241,48 @@ def _data_fns():
     }
 
 
-def _redact_and_insert(page, clear_rects, text_inserts, shipment):
+def _write_wrapped(page, text, point, fontsize, max_width=158, max_words=10):
+    """写入可自动换行的多行文本（Description of goods）。
+
+    换行规则（满足任一即换行）：
+      1. 遇到逗号（, 或 ，）或数据中的换行 → 换行
+      2. 每行不超过 max_words（10）个单词
+      3. 行宽不超过 max_width（点）
+    避免单行溢出页面。
+    """
+    if not text:
+        return
+    segments = [seg for seg in re.split(r'[,，\n]+', text) if seg.strip()]
+    if not segments:
+        return
+    lines = []
+    cur = []
+    for seg in segments:
+        for w in seg.split():
+            if not cur:
+                cur = [w]
+                continue
+            candidate = cur + [w]
+            too_wide = fitz.get_text_length(' '.join(candidate), fontname='helv',
+                                            fontsize=fontsize) > max_width
+            if len(cur) >= max_words or too_wide:
+                lines.append(cur)
+                cur = [w]
+            else:
+                cur = candidate
+        if cur:  # 逗号/换行分隔 → 另起一行
+            lines.append(cur)
+            cur = []
+    if cur:
+        lines.append(cur)
+    x, y = point
+    line_h = fontsize * 1.25
+    for i, line in enumerate(lines):
+        page.insert_text(fitz.Point(x, y + i * line_h), ' '.join(line),
+                         fontsize=fontsize, fontname='helv', color=(0, 0, 0))
+
+
+def _redact_and_insert(page, clear_rects, text_inserts, shipment, desc_max_width=158):
     """
     clear_rects: [(x0, y0, x1, y1), ...]  — 红划删除区域
     text_inserts: [((x, y), field_key, fontsize), ...] — 插入点 + 字段名
@@ -202,8 +299,12 @@ def _redact_and_insert(page, clear_rects, text_inserts, shipment):
         text = F[field_key](shipment)
         if not text:
             continue
-        page.insert_text(fitz.Point(*pt), text, fontsize=fontsize,
-                         fontname='helv', color=(0, 0, 0))
+        if field_key == 'desc':
+            # Description of goods 多行自动换行（每行最多 10 词，超宽自动换行）
+            _write_wrapped(page, text, pt, fontsize, desc_max_width)
+        else:
+            page.insert_text(fitz.Point(*pt), text, fontsize=fontsize,
+                             fontname='helv', color=(0, 0, 0))
 
 
 def sea_train_fields(is_train=False):
@@ -280,7 +381,7 @@ def sea_train_fields(is_train=False):
         # 货物表 — baseline 对齐模板 y=395
         ((77, 395),   'marks',    9),
         ((130, 395),  'cartons',  9),
-        ((218, 395),  'desc',     9),
+        ((218, 395),  'desc',     10.5),
         ((382, 395),  'kgs',      9),
         ((459, 395),  'cbm',      9),
         # 底部日期
@@ -310,7 +411,7 @@ def truck_fields():
         ((202, 316),   'place_delv', 9),
         ((42, 360),    'container', 8),
         ((46, 362),    'marks',    9),
-        ((298, 362),   'desc',     8),
+        ((298, 362),   'desc',     10.5),
         ((435, 362),   'kgs',      8),
         ((435, 372),   'cbm',      8),
         ((380, 683),   'pdi_date', 9),
@@ -319,17 +420,17 @@ def truck_fields():
     return clear_rects, text_inserts
 
 
-def generate_bl(shipment):
+def generate_bl(shipment, jtt_part=None, total_cartons=None):
     template_type = _safe_str(shipment.get('引用模板', ''))
     template_path = _get_template_path(template_type)
     if not template_path or not os.path.exists(template_path):
         print(f'  ⚠ 找不到提单模板: {template_type}')
         return None
 
-    jtt_no = _safe_str(shipment.get('JTT no.', ''))
+    jtt_no = jtt_part or _safe_str(shipment.get('JTT no.', ''))
     channel = _safe_str(shipment.get('渠道', ''))
-    cartons = shipment.get('cartons', 0) or 0
-    fname = f'{jtt_no}{sanitize_filename(channel)}{cartons}提单.pdf'
+    cartons = total_cartons if total_cartons is not None else (shipment.get('cartons', 0) or 0)
+    fname = f'{jtt_no}{sanitize_filename(channel)}{cartons}件提单.pdf'
     out_path = os.path.join(OUTPUT_DIR, fname)
 
     try:
@@ -347,7 +448,8 @@ def generate_bl(shipment):
             doc.close()
             return None
 
-        _redact_and_insert(page, clear_rects, inserts, shipment)
+        _redact_and_insert(page, clear_rects, inserts, shipment,
+                           desc_max_width=130 if tt == 'by truck' else 158)
         doc.save(out_path, garbage=4, deflate=True)
         doc.close()
         print(f'  ✅ 提单: {fname}')
@@ -360,6 +462,71 @@ def generate_bl(shipment):
 
 
 # ============================================================
+# 合并逻辑 — 同一 B/L No 的多票合并为一票
+# ============================================================
+def _fmt_jtts(jtt_list):
+    """格式化 JTT 号列表用于文件名
+
+    单票: JTT202605000307
+    多票: JTT202605000364,353 （共享前缀 + 逗号分隔的序号）
+    """
+    if len(jtt_list) == 1:
+        return jtt_list[0]
+    # 所有 JTT 号格式: "JTT" + 年月日 + 序号，前12字符为公共前缀
+    PREFIX_LEN = 12  # "JTT202605000"
+    prefix = jtt_list[0][:PREFIX_LEN]
+    if all(j.startswith(prefix) for j in jtt_list):
+        suffixes = [j[PREFIX_LEN:] for j in jtt_list]
+        return prefix + ','.join(suffixes)
+    # fallback: 用 os.path.commonprefix
+    prefix = os.path.commonprefix(jtt_list)
+    if len(prefix) >= 6:
+        suffixes = [j[len(prefix):] for j in jtt_list]
+        return prefix + ','.join(suffixes)
+    return ','.join(jtt_list)
+
+
+def _merge_shipments(group):
+    """合并同一 B/L 的多票货为一个 shipment dict
+
+    多行数据用 \\n 拼接，cartons/KGS/CBM 累加
+    """
+    merged = dict(group[0])
+
+    marks_list = []
+    desc_list = []
+    total_cartons = 0
+    total_kgs = 0.0
+    total_cbm = 0.0
+
+    for s in group:
+        m = str(s.get('Marks & No.', '') or '').strip()
+        if m and m not in marks_list:
+            marks_list.append(m)
+        d = str(s.get('Description of goods', '') or '').strip()
+        if d and d not in desc_list:
+            desc_list.append(d)
+        total_cartons += int(s.get('cartons', 0) or 0)
+        try:
+            total_kgs += float(s.get('KGS', 0) or 0)
+        except (ValueError, TypeError):
+            pass
+        try:
+            total_cbm += float(s.get('CBM', 0) or 0)
+        except (ValueError, TypeError):
+            pass
+
+    merged['Marks & No.'] = '\n'.join(marks_list) if marks_list else ''
+    merged['Description of goods'] = '\n'.join(desc_list) if desc_list else ''
+    merged['cartons'] = total_cartons
+    merged['KGS'] = round(total_kgs, 2)
+    merged['CBM'] = round(total_cbm, 3)
+
+    merged['_jtt_list'] = [str(s.get('JTT no.', '') or '').strip() for s in group]
+    return merged
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -368,26 +535,43 @@ def main():
     print(f'📂 输出目录: {OUTPUT_DIR}\n')
 
     shipments = load_shipments()
-    print(f'📋 共 {len(shipments)} 票待生成\n')
+    print(f'📋 共 {len(shipments)} 票待生成（按 B/L No 合并输出）\n')
+
+    # 按 B/L No 分组（同一提单的多票合并输出）
+    bl_groups = defaultdict(list)
+    for s in shipments:
+        bl_no = _safe_str(s.get('B/L No.', '')).strip()
+        bl_groups[bl_no].append(s)
 
     telex_ok = bl_ok = 0
-    for i, s in enumerate(shipments, 1):
-        jtt_no = _safe_str(s.get('JTT no.', ''))
-        channel = _safe_str(s.get('渠道', ''))
-        template = _safe_str(s.get('引用模板', ''))
-        cartons = s.get('cartons', 0) or 0
-        print(f'[{i:02d}] {jtt_no} | {channel} | {template} | {cartons}箱')
-
-        if generate_telex(s):
-            telex_ok += 1
-        if generate_bl(s):
-            bl_ok += 1
-        print()
+    for i, (bl_no, group) in enumerate(bl_groups.items(), 1):
+        if len(group) == 1:
+            # 单票 — 直接生成
+            s = group[0]
+            jtt_no = _safe_str(s.get('JTT no.', ''))
+            cartons = int(s.get('cartons', 0) or 0)
+            print(f'[{i:02d}] {jtt_no} | {_safe_str(s.get("渠道", ""))} | {_safe_str(s.get("引用模板", ""))} | {cartons}箱')
+            if generate_telex(s, jtt_part=jtt_no, total_cartons=cartons):
+                telex_ok += 1
+            if generate_bl(s, jtt_part=jtt_no, total_cartons=cartons):
+                bl_ok += 1
+            print()
+        else:
+            # 多票合并 — 汇总数据
+            merged = _merge_shipments(group)
+            jtt_part = _fmt_jtts(merged['_jtt_list'])
+            total_cartons = merged['cartons']
+            print(f'[{i:02d}] {jtt_part} | {_safe_str(merged.get("渠道", ""))} | {_safe_str(merged.get("引用模板", ""))} | {total_cartons}箱')
+            if generate_telex(merged, jtt_part=jtt_part, total_cartons=total_cartons):
+                telex_ok += 1
+            if generate_bl(merged, jtt_part=jtt_part, total_cartons=total_cartons):
+                bl_ok += 1
+            print()
 
     print(f'={"=" * 50}')
     print(f'📊 完成统计:')
-    print(f'   ✅ 电放保函: {telex_ok}/{len(shipments)}')
-    print(f'   ✅ 提单:     {bl_ok}/{len(shipments)}')
+    print(f'   ✅ 电放保函: {telex_ok}/{len(bl_groups)}')
+    print(f'   ✅ 提单:     {bl_ok}/{len(bl_groups)}')
     print(f'   📁 输出目录: {OUTPUT_DIR}')
 
 

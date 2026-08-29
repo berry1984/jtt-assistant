@@ -14,7 +14,7 @@
     返回 ZIP 文件路径，内含 提单PDF + 电放保函xlsx
 """
 
-import os, sys, io, zipfile, tempfile, shutil
+import os, sys, io, re, zipfile, tempfile, shutil
 from collections import defaultdict
 from datetime import datetime, timedelta
 import openpyxl
@@ -64,16 +64,37 @@ def _get_font():
 #  工具函数
 # ═══════════════════════════════════════════════
 
+_FONT_OBJ_CACHE = None  # fitz.Font 对象缓存（用于文本宽度测量）
+
+
+def _get_font_obj():
+    """返回 fitz.Font 对象用于宽度测量。
+
+    fitz.get_text_length() 不接受 fontfile 参数（PyMuPDF 1.26），无法按自定义字体
+    测量宽度；改用 fitz.Font(text_length) 即可按 Arial/替代字体精确测量。
+    """
+    global _FONT_OBJ_CACHE
+    if _FONT_OBJ_CACHE:
+        return _FONT_OBJ_CACHE
+    font_name, font_file = _get_font()
+    try:
+        if font_file:
+            _FONT_OBJ_CACHE = fitz.Font(font_name, font_file)
+        else:
+            _FONT_OBJ_CACHE = fitz.Font(font_name)
+    except Exception:
+        _FONT_OBJ_CACHE = fitz.Font('helv')
+    return _FONT_OBJ_CACHE
+
+
 def _fit_text(page, text, point, font_name, font_file, fontsize, max_width, min_fontsize=5):
     """写入文本，如果超宽则自动缩小字号直至能在 max_width（点）内放下"""
     if not text:
         return
     size = fontsize
+    font_obj = _get_font_obj()
     while size >= min_fontsize:
-        kw = dict(fontname=font_name, fontsize=size)
-        if font_file:
-            kw['fontfile'] = font_file
-        w = fitz.get_text_length(text, **kw)
+        w = font_obj.text_length(text, fontsize=size)
         if w <= max_width:
             break
         size -= 0.5
@@ -81,6 +102,49 @@ def _fit_text(page, text, point, font_name, font_file, fontsize, max_width, min_
     if font_file:
         kwargs['fontfile'] = font_file
     page.insert_text(fitz.Point(*point), text, **kwargs)
+
+
+def _write_wrapped(page, text, point, font_name, font_file, fontsize, max_width, max_words=10):
+    """写入可自动换行的多行文本（Description of goods）。
+
+    换行规则（满足任一即换行）：
+      1. 遇到逗号（, 或 ，）或数据中的换行 → 换行
+      2. 每行不超过 max_words（10）个单词
+      3. 行宽不超过 max_width（点）
+    避免单行溢出页面。
+    """
+    if not text:
+        return
+    font_obj = _get_font_obj()
+    segments = [seg for seg in re.split(r'[,，\n]+', text) if seg.strip()]
+    if not segments:
+        return
+    lines = []
+    cur = []
+    for seg in segments:
+        for w in seg.split():
+            if not cur:
+                cur = [w]
+                continue
+            candidate = cur + [w]
+            too_wide = font_obj.text_length(' '.join(candidate), fontsize=fontsize) > max_width
+            if len(cur) >= max_words or too_wide:
+                lines.append(cur)
+                cur = [w]
+            else:
+                cur = candidate
+        if cur:  # 逗号/换行分隔 → 另起一行
+            lines.append(cur)
+            cur = []
+    if cur:
+        lines.append(cur)
+    x, y = point
+    kwargs = dict(fontsize=fontsize, fontname=font_name, color=(0, 0, 0))
+    if font_file:
+        kwargs['fontfile'] = font_file
+    line_h = fontsize * 1.25
+    for i, line in enumerate(lines):
+        page.insert_text(fitz.Point(x, y + i * line_h), ' '.join(line), **kwargs)
 
 
 def _safe_str(v):
@@ -110,6 +174,27 @@ def _sanitize(s):
 # ═══════════════════════════════════════════════
 #  数据提取
 # ═══════════════════════════════════════════════
+
+def _split_jtt_cell(raw):
+    """拆分 JTT no. 单元格中的多个单号。
+
+    单元格可能是一个单号，也可能是多个单号用逗号/顿号/斜杠/空格/换行等分隔：
+        "JTT202605000328"                        → ['JTT202605000328']
+        "JTT202605000328,340,330,331,334,335"    → ['JTT202605000328','JTT202605000340',...]
+        "JTT202605000328/JTT202605000340"        → 两个完整单号
+    裸序号（无 JTT 前缀）自动补全基础前缀。
+    """
+    parts = [p.strip() for p in re.split(r'[,，、;；/\s]+', str(raw)) if p.strip()]
+    if not parts:
+        return []
+    # 只有首段是 JTT 编号才算 JTT 单元格；备注说明行（首段如 "2."/"备注"）原样返回
+    if not parts[0].startswith('JTT'):
+        return parts
+    # 基础前缀：JTT + YYYYMM + "000"（12 位，与 _fmt_jtts 的 PREFIX_LEN 一致）
+    # JTT202605000328 → 前缀 JTT202605000 + 序号 328
+    base = parts[0][:12]
+    return [p if p.startswith('JTT') else base + p for p in parts]
+
 
 def _load_shipments(excel_path):
     """从 Excel 的含"提单信息"的 sheet 加载数据（不限制文件名和月份）"""
@@ -154,11 +239,15 @@ def _load_shipments(excel_path):
     shipments = []
     for row in raw_rows:
         d = dict(zip(headers, row))
-        jtt_no = _safe_str(d.get('JTT no.', '')).strip()
-        if not jtt_no:
+        raw_jtt = _safe_str(d.get('JTT no.', '')).strip()
+        if not raw_jtt:
             continue  # 完全空行直接跳过
+        # 拆分单元格中的多个单号
+        jtt_nos = _split_jtt_cell(raw_jtt)
+        if not jtt_nos:
+            continue
         # 跳过非 JTT 编号的行（如底部备注说明行）
-        if not jtt_no.startswith('JTT'):
+        if not jtt_nos[0].startswith('JTT'):
             continue
 
         # 向下填充：属于填充列表且当前为 None 的列，从上一条缓存取值
@@ -177,7 +266,17 @@ def _load_shipments(excel_path):
         bl_no = _safe_str(d.get('B/L No.', '')).strip()
         if not bl_no:
             continue
-        shipments.append(d)
+
+        # 单元格含多个单号 → 拆分为多票；箱数/KGS/CBM 只在首个单号保留，
+        # 避免同 B/L 合并时重复累加
+        for i, jtt in enumerate(jtt_nos):
+            item = dict(d)
+            item['JTT no.'] = jtt
+            if i > 0:
+                item['cartons'] = 0
+                item['KGS'] = 0
+                item['CBM'] = 0
+            shipments.append(item)
 
     wb.close()
     return shipments
@@ -315,7 +414,7 @@ def _sea_train_fields(is_train=False):
         ((56, 544),   'container',    10.5, 60),
         ((77, 395),   'marks',        9,    58),
         ((130, 395),  'cartons',      9,    78),
-        ((218, 395),  'desc',         9,   158),
+        ((218, 395),  'desc',        10.5, 158),
         ((390, 395),  'kgs',         10.5,  58),
         ((459, 395),  'cbm',          9,    48),
         ((428, 628),  'ob_date',      9,    42),
@@ -343,7 +442,7 @@ def _truck_fields():
         ((202, 316),  'place_delv',   9,   100),
         ((42, 360),   'container',    8,   250),
         ((46, 362),   'marks',        9,   245),
-        ((298, 362),  'desc',         8,   130),
+        ((298, 362),  'desc',        10.5, 130),
         ((435, 362),  'kgs',          8,   145),
         ((435, 372),  'cbm',          8,   145),
         ((380, 683),  'pdi_date',     9,    75),
@@ -388,7 +487,11 @@ def _gen_bl(shipment, out_dir, jtt_part=None, total_cartons=None):
         for pt, field_key, fontsize, max_width in inserts:
             text = F[field_key](shipment)
             if text:
-                _fit_text(page, text, pt, font_name, font_file, fontsize, max_width)
+                if field_key == 'desc':
+                    # Description of goods 多行自动换行（每行最多 10 词，超宽自动换行）
+                    _write_wrapped(page, text, pt, font_name, font_file, fontsize, max_width)
+                else:
+                    _fit_text(page, text, pt, font_name, font_file, fontsize, max_width)
 
         doc.save(out_path, garbage=4, deflate=True)
         doc.close()
