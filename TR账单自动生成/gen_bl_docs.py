@@ -414,20 +414,20 @@ def _sea_train_fields(is_train=False):
         clear_rects.append((52, 314, 249, 326))
 
     # 字体大小参照模板（baseline 取在单元格中上部，避免 descender 穿过下边框）:
-    #   place_rcpt / port_load: 9.5（模板 Calibri 10.6 → 缩小以保边框）
-    #   vessel:                  8.0（模板 SimSun 7.5；超宽自动缩小）
-    #   port_disc / place_delv: 10.5
+    #   place_rcpt / port_load: 8.5（模板 Calibri 10.6 → 缩至 8.5，留足蓝框边距）
+    #   vessel:                  7.5（模板 SimSun 7.5；超宽自动缩小）
+    #   port_disc / place_delv:  9.0（10.5 → 9.0，避免文字贴近/超出下蓝线）
     #   bl_no / container / notify_party: 10.5
     #   ArialMT 9 → marks/cartons/cbm/dates 9；desc/kgs 10.5
     #   第5项 max_width（点）— 超出则自动缩小字号
     text_inserts = [
         ((428, 67),   'bl_no',        10.5, 85),
         ((56, 267),   'notify_party', 10.5, 190),
-        ((161, 296),  'place_rcpt',    9.5, 85),
-        ((52, 320.5), 'vessel',        8.0, 104),
-        ((161, 322),  'port_load',     9.5, 85),
-        ((52, 350.5), 'port_disc',    10.5, 100),
-        ((161, 350.5), 'place_delv',  10.5, 90),
+        ((161, 296),  'place_rcpt',    8.5, 85),
+        ((52, 320.5), 'vessel',        7.5, 104),
+        ((161, 322),  'port_load',     8.5, 85),
+        ((52, 350.5), 'port_disc',     9.0, 100),
+        ((161, 350.5), 'place_delv',   9.0, 90),
         ((56, 544),   'container',    10.5, 60),
         ((77, 395),   'marks',        9,    58),
         ((130, 395),  'cartons',      9,    78),

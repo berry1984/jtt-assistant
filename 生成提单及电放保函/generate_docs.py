@@ -360,23 +360,17 @@ def sea_train_fields(is_train=False):
     if is_train:
         clear_rects.append((52, 314, 249, 326))
 
-    # ── 文字写入位置 — baseline 与模板原始数据对齐 ──
-    # 模板原始数据 bbox:
-    #   B/L No "CHN3261876P5"  bbox y=54-64   → baseline y=64
-    #   Place of receipt       bbox y=287-298 → baseline y=298
-    #   Vessel                 bbox y=314-322 → baseline y=322
-    #   Port loading           bbox y=314-325 → baseline y=325
-    #   Port discharge         bbox y=342-352 → baseline y=352
-    #   Place delivery         bbox y=342-352 → baseline y=352
-    #   Container No           bbox y=533-544 → baseline y=544
-    #   表格第一行             bbox y=383-395 → baseline y=395
+    # ── 文字写入位置 — 与 web 模块 gen_bl_docs.py 对齐 ──
+    # 模板蓝线: y=272, 286, 300, 313, 327, 341, 354
+    # 基线取单元格中上部，字号调小（place_rcpt/port_load 8.5、vessel 7.5、
+    # port_disc/place_delv 9.0），保证文字不超出蓝色边框
     text_inserts = [
         ((428, 67),   'bl_no',    9),
-        ((161, 298),  'place_rcpt', 11),
-        ((52, 322),   'vessel',   8),
-        ((161, 325),  'port_load', 11),
-        ((52, 352),   'port_disc', 11),
-        ((161, 352),  'place_delv', 11),
+        ((161, 296),  'place_rcpt', 8.5),
+        ((52, 320.5), 'vessel',   7.5),
+        ((161, 322),  'port_load', 8.5),
+        ((52, 350.5), 'port_disc', 9.0),
+        ((161, 350.5), 'place_delv', 9.0),
         ((56, 544),   'container', 10),
         # 货物表 — baseline 对齐模板 y=395
         ((77, 395),   'marks',    9),
