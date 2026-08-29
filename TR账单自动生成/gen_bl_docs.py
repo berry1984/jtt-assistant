@@ -7,7 +7,7 @@
     zip_path = generate_bl_docs(uploaded_excel_path, output_dir)
 
 输入要求:
-    Excel 文件含 sheet "5月提单信息"，列名与 TR 退税资料明细 一致
+    读取 Excel 第一个 sheet 的提单数据（列名与 TR 退税资料明细 一致）
     (JTT no. / 渠道 / 引用模板 / B/L No. / Ocean Vessel / ...)
 
 输出:
@@ -205,23 +205,10 @@ def _split_jtt_cell(raw):
 
 
 def _load_shipments(excel_path):
-    """从 Excel 的含"提单信息"的 sheet 加载数据（不限制文件名和月份）"""
+    """从 Excel 的第一个 sheet 加载数据（默认只读第一个 sheet，不检测表名）"""
     wb = openpyxl.load_workbook(excel_path, data_only=True)
 
-    # 优先找含"提单信息"的 sheet → 其次含"提单" → 默认第一个
-    sheet_name = None
-    for sn in wb.sheetnames:
-        if '提单信息' in sn:
-            sheet_name = sn
-            break
-    if not sheet_name:
-        for sn in wb.sheetnames:
-            if '提单' in sn:
-                sheet_name = sn
-                break
-    if not sheet_name:
-        sheet_name = wb.sheetnames[0]  # 默认第一个
-
+    sheet_name = wb.sheetnames[0]  # 只读第一个 sheet
     ws = wb[sheet_name]
 
     headers = []
@@ -602,7 +589,7 @@ def generate_bl_docs(excel_path, output_dir=None):
     生成提单 + 电放保函 ZIP
 
     参数:
-        excel_path: 上传的 Excel 文件路径（含 '5月提单信息' sheet）
+        excel_path: 上传的 Excel 文件路径（读取其第一个 sheet）
         output_dir: 输出目录，None 则自动创建临时目录
 
     返回:
@@ -617,7 +604,7 @@ def generate_bl_docs(excel_path, output_dir=None):
     shipments = _load_shipments(excel_path)
 
     if not shipments:
-        raise ValueError("Excel 中未找到有效的提单数据（需要 '5月提单信息' sheet，且含有效的 B/L No.）")
+        raise ValueError("Excel 第一个 sheet 中未找到有效的提单数据（需含 JTT no. 且含有效的 B/L No.）")
 
     # 按 B/L No 分组（同一提单的多票合并输出）
     bl_groups = defaultdict(list)
