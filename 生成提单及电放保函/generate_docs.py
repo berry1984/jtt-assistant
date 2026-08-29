@@ -458,18 +458,18 @@ def sea_train_fields(is_train=False):
     if is_train:
         clear_rects.append((52, 314, 249, 326))
 
-    # ── 文字写入位置 — 与 web 模块 gen_bl_docs.py 完全一致（已上线验证）──
+    # ── 文字写入位置 — 与 web 模块 gen_bl_docs.py 一致（含用户调小的字号）──
     # 模板蓝线: y=272, 286, 300, 313, 327, 341, 354
-    # 基线取单元格中上部，字号参照模板（place_rcpt/port_load 9.5、vessel 8.0、
-    # port_disc/place_delv 10.5），超宽自动缩小，保证文字不超出蓝色边框
+    # 基线取单元格中上部，字号调小（place_rcpt/port_load 8.5、vessel 7.5、
+    # port_disc/place_delv 9.0），超宽自动缩小，保证文字不超出蓝色边框
     # 第4项 max_width（点）— 超出则自动缩小字号
     text_inserts = [
         ((428, 67),   'bl_no',        10.5, 85),
-        ((161, 296),  'place_rcpt',    9.5, 85),
-        ((52, 320.5), 'vessel',        8.0, 104),
-        ((161, 322),  'port_load',     9.5, 85),
-        ((52, 350.5), 'port_disc',    10.5, 100),
-        ((161, 350.5), 'place_delv',  10.5, 90),
+        ((161, 296),  'place_rcpt',    8.5, 85),
+        ((52, 320.5), 'vessel',        7.5, 104),
+        ((161, 322),  'port_load',     8.5, 85),
+        ((52, 350.5), 'port_disc',     9.0, 100),
+        ((161, 350.5), 'place_delv',   9.0, 90),
         ((56, 544),   'container',    10.5, 60),
         # 货物表 — baseline 对齐模板 y=395
         ((77, 395),   'marks',        9,    58),
