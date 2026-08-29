@@ -46,7 +46,7 @@ ZIP：`提单电放保函_{YYYYMMDD_HHMMSS}.zip`
 
 ## PDF / 电放保函细节
 
-- **字体**：Arial 10.5（替代原 Calibri/SimSun）；跨平台回退 macOS Arial → Linux Liberation/DejaVu → helv
+- **字体**：Arial 10.5（替代原 Calibri/SimSun）；跨平台回退 macOS Arial → Linux Liberation/DejaVu → helv。Dockerfile 安装 `fonts-liberation`，保证线上渲染用 Arial 度量兼容字体，避免回退 helv 导致文字顶部穿过边框
 - **长文本**：超框自动缩小字号（船名航次等）
 - **KGS**：显示为 `{值}\nKGS`，插入点右移避免遮挡蓝线
 - **中段布局**：place_rcpt/port_load 用 9.5 号、vessel 8.0，baseline 上移至单元格中上部，避免 descender 穿过蓝色边框
