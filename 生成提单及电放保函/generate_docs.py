@@ -48,6 +48,57 @@ def _safe_str(v):
     return str(v)
 
 
+# ── 字体解析 — 与 web 模块 gen_bl_docs.py 一致 ──
+_FONT_CACHE = None  # (fontname, fontfile)
+
+
+def _get_font():
+    """返回 (fontname, fontfile) 用于 PyMuPDF insert_text。
+    优先找 Arial → Liberation Sans → DejaVu Sans → 内置 helv。"""
+    global _FONT_CACHE
+    if _FONT_CACHE:
+        return _FONT_CACHE
+    candidates = [
+        # macOS
+        ('Arial', '/System/Library/Fonts/Supplemental/Arial.ttf'),
+        ('Arial', '/Library/Fonts/Arial.ttf'),
+        # Linux: fonts-liberation (apt install fonts-liberation)
+        ('Arial', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'),
+        ('Arial', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf'),
+        # Linux: msttcorefonts
+        ('Arial', '/usr/share/fonts/truetype/msttcorefonts/Arial.ttf'),
+        # Linux: DejaVu Sans 作为兜底
+        ('DejaVu Sans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        ('DejaVu Sans', '/usr/share/fonts/dejavu/DejaVuSans.ttf'),
+    ]
+    for fname, fpath in candidates:
+        if os.path.exists(fpath):
+            _FONT_CACHE = (fname, fpath)
+            return _FONT_CACHE
+    # 没有任何 TTF 时使用 PyMuPDF 内置 Helvetica
+    _FONT_CACHE = ('helv', None)
+    return _FONT_CACHE
+
+
+_FONT_OBJ_CACHE = None  # fitz.Font 对象缓存（用于文本宽度测量）
+
+
+def _get_font_obj():
+    """返回 fitz.Font 对象用于宽度测量（可精确按 Arial/替代字体测量）。"""
+    global _FONT_OBJ_CACHE
+    if _FONT_OBJ_CACHE:
+        return _FONT_OBJ_CACHE
+    font_name, font_file = _get_font()
+    try:
+        if font_file:
+            _FONT_OBJ_CACHE = fitz.Font(font_name, font_file)
+        else:
+            _FONT_OBJ_CACHE = fitz.Font(font_name)
+    except Exception:
+        _FONT_OBJ_CACHE = fitz.Font('helv')
+    return _FONT_OBJ_CACHE
+
+
 def fmt_date(d):
     if isinstance(d, datetime):
         return d
@@ -186,9 +237,28 @@ def generate_telex(shipment, jtt_part=None, total_cartons=None):
     ws['E12'] = vessel_str
     ws['E14'] = container
 
-    # Shipper/Consignee — 固定标签文案（与 Web 模块一致，不写 shipper/consignee 变量）
-    ws['A16'] = 'Shipper （发货人）                   :'
-    ws['A18'] = 'Consignee （收货人）               :   '
+    # Shipper / Consignee — 写入完整信息（名称+地址，多行换行显示），
+    # 避免只显示模板内置的第一行公司名导致"信息不全"。
+    # 优先取数据中的 Shipper/Consignee 列，缺失时回退到上方常量。
+    shipper_full = _safe_str(shipment.get('Shipper', '')).strip() or SHIPPER
+    consignee_full = _safe_str(shipment.get('Consignee', '')).strip() or CONSIGNEE
+    # 清掉模板内置的第一行公司名（E16/E18），避免与 A16/A18 重复
+    ws['E16'] = None
+    ws['E18'] = None
+    if shipper_full:
+        ws.merge_cells('A16:I16')
+        ws['A16'] = f'Shipper （发货人）: {shipper_full}'
+        ws['A16'].alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[16].height = 42
+    else:
+        ws['A16'] = 'Shipper （发货人）                   :'
+    if consignee_full:
+        ws.merge_cells('A18:I18')
+        ws['A18'] = f'Consignee （收货人）: {consignee_full}'
+        ws['A18'].alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[18].height = 42
+    else:
+        ws['A18'] = 'Consignee （收货人）               :   '
 
     # 日期
     if isinstance(collect_date, datetime):
@@ -241,7 +311,7 @@ def _data_fns():
     }
 
 
-def _write_wrapped(page, text, point, fontsize, max_width=158, max_words=10):
+def _write_wrapped(page, text, point, font_name, font_file, fontsize, max_width=158, max_words=10):
     """写入可自动换行的多行文本（Description of goods）。
 
     换行规则（满足任一即换行）：
@@ -252,6 +322,7 @@ def _write_wrapped(page, text, point, fontsize, max_width=158, max_words=10):
     """
     if not text:
         return
+    font_obj = _get_font_obj()
     segments = [seg for seg in re.split(r'[,，\n]+', text) if seg.strip()]
     if not segments:
         return
@@ -263,8 +334,7 @@ def _write_wrapped(page, text, point, fontsize, max_width=158, max_words=10):
                 cur = [w]
                 continue
             candidate = cur + [w]
-            too_wide = fitz.get_text_length(' '.join(candidate), fontname='helv',
-                                            fontsize=fontsize) > max_width
+            too_wide = font_obj.text_length(' '.join(candidate), fontsize=fontsize) > max_width
             if len(cur) >= max_words or too_wide:
                 lines.append(cur)
                 cur = [w]
@@ -277,9 +347,29 @@ def _write_wrapped(page, text, point, fontsize, max_width=158, max_words=10):
         lines.append(cur)
     x, y = point
     line_h = fontsize * 1.25
+    kwargs = dict(fontname=font_name, color=(0, 0, 0))
+    if font_file:
+        kwargs['fontfile'] = font_file
     for i, line in enumerate(lines):
         page.insert_text(fitz.Point(x, y + i * line_h), ' '.join(line),
-                         fontsize=fontsize, fontname='helv', color=(0, 0, 0))
+                         fontsize=fontsize, **kwargs)
+
+
+def _fit_text(page, text, point, font_name, font_file, fontsize, max_width, min_fontsize=5):
+    """写入文本，如果超宽则自动缩小字号直至能在 max_width（点）内放下"""
+    if not text:
+        return
+    size = fontsize
+    font_obj = _get_font_obj()
+    while size >= min_fontsize:
+        w = font_obj.text_length(text, fontsize=size)
+        if w <= max_width:
+            break
+        size -= 0.5
+    kwargs = dict(fontsize=size, fontname=font_name, color=(0, 0, 0))
+    if font_file:
+        kwargs['fontfile'] = font_file
+    page.insert_text(fitz.Point(*point), text, **kwargs)
 
 
 def _redact_and_insert(page, clear_rects, text_inserts, shipment, desc_max_width=158):
@@ -288,6 +378,10 @@ def _redact_and_insert(page, clear_rects, text_inserts, shipment, desc_max_width
     text_inserts: [((x, y), field_key, fontsize), ...] — 插入点 + 字段名
     """
     F = _data_fns()
+    font_name, font_file = _get_font()
+    kwargs = dict(fontname=font_name, color=(0, 0, 0))
+    if font_file:
+        kwargs['fontfile'] = font_file
     # 阶段1：删除旧数据
     for rect in clear_rects:
         if not rect:
@@ -295,16 +389,20 @@ def _redact_and_insert(page, clear_rects, text_inserts, shipment, desc_max_width
         page.add_redact_annot(fitz.Rect(*rect), fill=(1, 1, 1))
     page.apply_redactions()
     # 阶段2：写入新数据
-    for pt, field_key, fontsize in text_inserts:
+    for item in text_inserts:
+        pt, field_key, fontsize = item[:3]
+        max_width = item[3] if len(item) > 3 else None
         text = F[field_key](shipment)
         if not text:
             continue
         if field_key == 'desc':
             # Description of goods 多行自动换行（每行最多 10 词，超宽自动换行）
-            _write_wrapped(page, text, pt, fontsize, desc_max_width)
+            _write_wrapped(page, text, pt, font_name, font_file, fontsize,
+                           max_width or desc_max_width)
+        elif max_width:
+            _fit_text(page, text, pt, font_name, font_file, fontsize, max_width)
         else:
-            page.insert_text(fitz.Point(*pt), text, fontsize=fontsize,
-                             fontname='helv', color=(0, 0, 0))
+            page.insert_text(fitz.Point(*pt), text, fontsize=fontsize, **kwargs)
 
 
 def sea_train_fields(is_train=False):
@@ -360,28 +458,29 @@ def sea_train_fields(is_train=False):
     if is_train:
         clear_rects.append((52, 314, 249, 326))
 
-    # ── 文字写入位置 — 与 web 模块 gen_bl_docs.py 对齐 ──
+    # ── 文字写入位置 — 与 web 模块 gen_bl_docs.py 完全一致（已上线验证）──
     # 模板蓝线: y=272, 286, 300, 313, 327, 341, 354
-    # 基线取单元格中上部，字号调小（place_rcpt/port_load 8.5、vessel 7.5、
-    # port_disc/place_delv 9.0），保证文字不超出蓝色边框
+    # 基线取单元格中上部，字号参照模板（place_rcpt/port_load 9.5、vessel 8.0、
+    # port_disc/place_delv 10.5），超宽自动缩小，保证文字不超出蓝色边框
+    # 第4项 max_width（点）— 超出则自动缩小字号
     text_inserts = [
-        ((428, 67),   'bl_no',    9),
-        ((161, 296),  'place_rcpt', 8.5),
-        ((52, 320.5), 'vessel',   7.5),
-        ((161, 322),  'port_load', 8.5),
-        ((52, 350.5), 'port_disc', 9.0),
-        ((161, 350.5), 'place_delv', 9.0),
-        ((56, 544),   'container', 10),
+        ((428, 67),   'bl_no',        10.5, 85),
+        ((161, 296),  'place_rcpt',    9.5, 85),
+        ((52, 320.5), 'vessel',        8.0, 104),
+        ((161, 322),  'port_load',     9.5, 85),
+        ((52, 350.5), 'port_disc',    10.5, 100),
+        ((161, 350.5), 'place_delv',  10.5, 90),
+        ((56, 544),   'container',    10.5, 60),
         # 货物表 — baseline 对齐模板 y=395
-        ((77, 395),   'marks',    9),
-        ((130, 395),  'cartons',  9),
-        ((218, 395),  'desc',     10.5),
-        ((382, 395),  'kgs',      9),
-        ((459, 395),  'cbm',      9),
+        ((77, 395),   'marks',        9,    58),
+        ((130, 395),  'cartons',      9,    78),
+        ((218, 395),  'desc',        10.5, 158),
+        ((390, 395),  'kgs',         10.5,  58),
+        ((459, 395),  'cbm',          9,    48),
         # 底部日期
-        ((428, 628),  'ob_date',  9),
-        ((397, 654),  'pdi_date', 9),
-        ((166, 706),  'ob_date',  9),
+        ((428, 628),  'ob_date',      9,    42),
+        ((397, 654),  'pdi_date',     9,    55),
+        ((166, 706),  'ob_date',      9,    45),
     ]
 
     return clear_rects, text_inserts
