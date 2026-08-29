@@ -29,6 +29,14 @@ BL_TRAIN = os.path.join(TEMPLATES_DIR, '提单By train.pdf')
 BL_TRUCK = os.path.join(TEMPLATES_DIR, '提单By truck.pdf')
 TELEX = os.path.join(TEMPLATES_DIR, '电放保函.xlsx')
 
+# ── 标准发货人/收货人（上传数据缺 Shipper/Consignee 列或为空时的兜底）──
+FALLBACK_SHIPPER = ("Guangzhou Tuorui Technology Co.,Ltd\n"
+                    "Room 411,No.101 Dexing Road Wanggang Jiahe Street\n"
+                    "Baiyun District, Guangzhou")
+FALLBACK_CONSIGNEE = ("Hong Kong Lixiang Trading Company Limited\n"
+                      "FLAT/RM 3B 3/F BANK TOWER NOS.351&353 KING'S\n"
+                      "ROAD NORTH POINT HK")
+
 # ── 跨平台字体查找（macOS / Linux 通用） ──
 _FONT_CACHE = None  # (fontname, fontfile)
 
@@ -338,9 +346,10 @@ def _gen_telex(shipment, out_dir, jtt_part=None, total_cartons=None):
     ws['E14'] = container
 
     # Shipper / Consignee — 写入数据中的完整信息（名称+地址，多行换行显示），
-    # 避免只显示模板内置的第一行公司名导致"信息不全"
-    shipper_full = _safe_str(shipment.get('Shipper', '')).strip()
-    consignee_full = _safe_str(shipment.get('Consignee', '')).strip()
+    # 避免只显示模板内置的第一行公司名导致"信息不全"。
+    # 数据缺 Shipper/Consignee 列或为空时，回退到标准公司信息兜底，保证单元格填满
+    shipper_full = _safe_str(shipment.get('Shipper', '')).strip() or FALLBACK_SHIPPER
+    consignee_full = _safe_str(shipment.get('Consignee', '')).strip() or FALLBACK_CONSIGNEE
     if shipper_full:
         ws.merge_cells('A16:I16')
         ws['A16'] = f'Shipper （发货人）: {shipper_full}'
