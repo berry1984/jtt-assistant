@@ -48,6 +48,26 @@ def _safe_str(v):
     return str(v)
 
 
+def _est_row_height(text, merged_width=90):
+    """按内容估算单元格所需行高（pt），保证 wrap_text 后所有行都显示。
+
+    merged_width: 合并单元格可容纳的字符宽度单位（中文字符按 2 计）。
+    电放保函 A16:A18 合并 A:I 约 90 单位宽；每行约 15pt。
+    """
+    units = 0
+    lines = 1
+    for ch in text:
+        if ch == '\n':  # 显式换行 → 另起一行
+            lines += 1
+            units = 0
+            continue
+        units += 2 if ord(ch) > 127 else 1
+        if units > merged_width:
+            lines += 1
+            units = 0
+    return max(45, lines * 15 + 8)
+
+
 # ── 字体解析 — 与 web 模块 gen_bl_docs.py 一致 ──
 _FONT_CACHE = None  # (fontname, fontfile)
 
@@ -249,14 +269,14 @@ def generate_telex(shipment, jtt_part=None, total_cartons=None):
         ws.merge_cells('A16:I16')
         ws['A16'] = f'Shipper （发货人）: {shipper_full}'
         ws['A16'].alignment = Alignment(wrap_text=True, vertical='top')
-        ws.row_dimensions[16].height = 42
+        ws.row_dimensions[16].height = _est_row_height(f'Shipper （发货人）: {shipper_full}')
     else:
         ws['A16'] = 'Shipper （发货人）                   :'
     if consignee_full:
         ws.merge_cells('A18:I18')
         ws['A18'] = f'Consignee （收货人）: {consignee_full}'
         ws['A18'].alignment = Alignment(wrap_text=True, vertical='top')
-        ws.row_dimensions[18].height = 42
+        ws.row_dimensions[18].height = _est_row_height(f'Consignee （收货人）: {consignee_full}')
     else:
         ws['A18'] = 'Consignee （收货人）               :   '
 
