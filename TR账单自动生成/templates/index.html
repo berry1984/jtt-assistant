@@ -465,7 +465,8 @@
     <div class="info-box">
       <strong>💰 功能：</strong>上传 6 家固定供应商报价文件 → <strong>云端持久化</strong>（不因刷新/部署丢失），按 <strong>供应商 → 国家 → 渠道</strong> 组织查询<br>
       <strong>🚚 类别：</strong>渠道自动识别 <strong>海运 / 空运 / 铁路 / 卡航 / 快递</strong> 运输类别，可分类筛选<br>
-      <strong>📅 每周报价：</strong>单独上传 JTT每周报价表 → 自动加入仓点覆盖渠道价；同槽位再传即覆盖更新
+      <strong>📅 每周报价：</strong>单独上传 JTT每周报价表 → 自动加入仓点覆盖渠道价；同槽位再传即覆盖更新<br>
+      <strong>📦 仓点查询：</strong>可<strong>多选国家同时筛选</strong>，并按 <strong>仓点码 / 邮编</strong> 搜索（如 DTM2 / WRO5 / 44145 / 06126）
     </div>
 
     <!-- ── 上传 / 覆盖区 ── -->
@@ -559,16 +560,27 @@
     <!-- ── 仓点查询面板 ── -->
     <div style="margin-bottom:16px;padding:16px;border:2px solid #ffb74d;border-radius:12px;background:#fff8f1;">
       <div style="font-size:15px;font-weight:700;color:#e65100;margin-bottom:10px;">📦 仓点查询（FBA 仓点 → 覆盖渠道价）</div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-        <select id="whCountry" style="flex:1;min-width:100px;padding:10px 14px;border:2px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff;" onchange="whLoad()">
-          <option value="">🌍 全部国家</option>
-          <option value="美国">🇺🇸 美国</option>
-          <option value="加拿大">🇨🇦 加拿大</option>
-          <option value="欧洲">🇪🇺 欧洲</option>
-          <option value="英国">🇬🇧 英国</option>
-        </select>
-        <button onclick="whLoad()" style="padding:10px 18px;border:none;border-radius:10px;background:#e65100;color:#fff;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;">🔄 刷新</button>
-        <div style="font-size:12px;color:#999;">点击仓点码展开覆盖渠道 · 角标数字=覆盖渠道数</div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="flex:1;min-width:170px;">
+          <label style="font-size:12px;font-weight:600;color:#e65100;display:block;margin-bottom:4px;">国家（可多选，同时筛选）</label>
+          <div id="whCountries" style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 10px;border:2px solid #d0d5dd;border-radius:10px;background:#fff;font-size:13px;">
+            <label><input type="checkbox" value="美国" checked> 🇺🇸 美国</label>
+            <label><input type="checkbox" value="加拿大" checked> 🇨🇦 加拿大</label>
+            <label><input type="checkbox" value="欧洲" checked> 🇪🇺 欧洲</label>
+            <label><input type="checkbox" value="英国" checked> 🇬🇧 英国</label>
+          </div>
+        </div>
+        <div style="flex:2;min-width:210px;">
+          <label style="font-size:12px;font-weight:600;color:#e65100;display:block;margin-bottom:4px;">仓点码 / 邮编搜索（跨国家同时匹配）</label>
+          <div style="display:flex;gap:6px;">
+            <input type="text" id="whSearch" placeholder="如 DTM2 / WRO5 / 44145 / 06126 / DTM2-44145"
+                   style="flex:1;padding:9px 12px;border:2px solid #d0d5dd;border-radius:10px;font-size:13px;"
+                   onkeydown="if(event.key==='Enter')whLoad()">
+            <button onclick="whLoad()" style="padding:9px 16px;border:none;border-radius:10px;background:#e65100;color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;">🔍 搜索</button>
+            <button onclick="whReset()" style="padding:9px 12px;border:1px solid #ffb74d;border-radius:10px;background:#fff;color:#e65100;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">清空</button>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#999;padding-bottom:4px;">点击仓点码展开覆盖渠道 · 角标数字=覆盖渠道数 · 仓点码下方为关联邮编</div>
       </div>
       <div id="whLoading" style="text-align:center;padding:24px 0;color:#999;display:none;"><div style="font-size:24px;margin-bottom:6px;">⏳</div><div>正在加载仓点...</div></div>
       <div id="whError" style="display:none;padding:12px;border-radius:8px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;margin-bottom:10px;"></div>
@@ -925,13 +937,15 @@ let whExpanded = {};
 let whLastData = null;
 
 function whLoad() {
-  const country = document.getElementById('whCountry').value;
+  const countries = Array.from(document.querySelectorAll('#whCountries input:checked')).map(i => i.value);
+  const keyword = document.getElementById('whSearch').value.trim();
   const loading = document.getElementById('whLoading');
   const error = document.getElementById('whError');
   const results = document.getElementById('whResults');
   loading.style.display = 'block'; error.style.display = 'none'; results.innerHTML = '';
   let url = '/api/warehouses?';
-  if (country) url += 'country=' + encodeURIComponent(country);
+  for (const c of countries) url += 'country=' + encodeURIComponent(c) + '&';
+  if (keyword) url += 'keyword=' + encodeURIComponent(keyword) + '&';
   fetch(url)
     .then(r => r.json())
     .then(data => {
@@ -941,6 +955,12 @@ function whLoad() {
       whRender(data);
     })
     .catch(e => { loading.style.display = 'none'; error.textContent = '❌ ' + e.message; error.style.display = 'block'; });
+}
+
+function whReset() {
+  document.querySelectorAll('#whCountries input').forEach(i => i.checked = true);
+  document.getElementById('whSearch').value = '';
+  whLoad();
 }
 
 function whExpand(code) {
@@ -972,24 +992,62 @@ function whDetailHtml(p) {
 
 function whRender(data) {
   const results = document.getElementById('whResults');
-  const countries = Object.keys(data || {});
-  if (!countries.length) { results.innerHTML = '<div style="padding:20px;text-align:center;color:#999;">暂无仓点数据</div>'; return; }
+  const grid = data.grid || data || {};
+  const zones = data.zones || [];
+  const countries = Object.keys(grid);
+  const kw = document.getElementById('whSearch').value.trim();
+  if (!countries.length && !zones.length) {
+    results.innerHTML = '<div style="padding:20px;text-align:center;color:#999;">' +
+      (kw ? '未找到匹配仓点或邮编/区域' : '暂无仓点数据') + '</div>';
+    return;
+  }
   let html = '';
+  let gridTotal = 0;
+  for (const cn of countries) for (const region of Object.keys(grid[cn])) gridTotal += grid[cn][region].length;
+  if (kw) {
+    html += '<div style="padding:8px 12px;background:#fff8f1;border:1px solid #ffb74d;border-radius:8px;font-size:13px;color:#e65100;margin-bottom:12px;">' +
+      '🔍 关键词 <strong>' + esc(kw) + '</strong> 命中 <strong>' + gridTotal + '</strong> 个仓点码/邮编' +
+      (zones.length ? ' · <strong>' + zones.length + '</strong> 条邮编/区域直查渠道' : '') + '</div>';
+  }
+  // 邮编/区域直查结果（美国邮编前缀段等，无具体仓点码）
+  if (zones.length) {
+    html += '<div style="margin-bottom:16px;padding:12px;border:2px solid #90caf9;border-radius:10px;background:#e3f2fd;">';
+    html += '<div style="font-size:13px;font-weight:700;color:#1565c0;margin-bottom:8px;">📮 邮编/区域直查（来自 JTT每周报价的邮编段模式）</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html += '<thead><tr style="background:#1565c0;color:#fff;">';
+    html += '<th style="padding:6px 8px;text-align:left;border:1px solid #0d47a1;">区域模式</th>';
+    html += '<th style="padding:6px 8px;text-align:left;border:1px solid #0d47a1;">分区</th>';
+    html += '<th style="padding:6px 8px;text-align:left;border:1px solid #0d47a1;">渠道</th>';
+    html += '<th style="padding:6px 8px;text-align:right;border:1px solid #0d47a1;">单价（¥）</th>';
+    html += '</tr></thead><tbody>';
+    for (const z of zones) {
+      html += '<tr style="border-bottom:1px solid #bbdefb;">' +
+        '<td style="padding:6px 8px;border:1px solid #bbdefb;color:#1565c0;font-weight:600;">' + esc(z.pattern) + '</td>' +
+        '<td style="padding:6px 8px;border:1px solid #bbdefb;color:#475569;">' + esc(z.section) + '</td>' +
+        '<td style="padding:6px 8px;border:1px solid #bbdefb;color:#37474f;">' + esc(z.channel) + '</td>' +
+        '<td style="padding:6px 8px;border:1px solid #bbdefb;text-align:right;font-weight:600;color:#1565c0;">' +
+        (z.price != null ? '¥' + Number(z.price).toFixed(2) : '—') + '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+  }
   for (const cn of countries) {
     html += '<div style="margin-bottom:16px;">';
     html += '<div style="font-size:14px;font-weight:700;color:#e65100;margin-bottom:8px;">' + flagIcon(cn) + ' ' + cn + '</div>';
-    for (const region of Object.keys(data[cn])) {
-      const pts = data[cn][region];
+    for (const region of Object.keys(grid[cn])) {
+      const pts = grid[cn][region];
       html += '<div style="margin-bottom:10px;">';
       html += '<div style="font-size:12px;font-weight:600;color:#888;margin-bottom:4px;">▸ ' + esc(region) + '（' + pts.length + ' 个仓点）</div>';
-      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start;">';
       for (const p of pts) {
         const cov = p.channels.length;
-        html += '<div style="display:inline-block;">' +
+        const postals = p.postals && p.postals.length ? p.postals : null;
+        html += '<div style="display:inline-block;text-align:center;">' +
           '<button onclick="whExpand(\'' + escAttr(p.code) + '\')" ' +
           'style="padding:6px 10px;border:1px solid ' + (cov ? '#ffb74d' : '#e0e0e0') + ';border-radius:8px;' +
-          'background:' + (cov ? '#fff3e0' : '#fafafa') + ';font-size:12px;font-weight:600;cursor:pointer;color:#37474f;">' + esc(p.code) +
-          (cov ? ' <span style="color:#e65100;">' + cov + '</span>' : '') + '</button>' +
+          'background:' + (cov ? '#fff3e0' : '#fafafa') + ';font-size:12px;font-weight:600;cursor:pointer;color:#37474f;line-height:1.4;">' + esc(p.code) +
+          (cov ? ' <span style="color:#e65100;">' + cov + '</span>' : '') +
+          (postals ? '<span style="display:block;font-size:10px;font-weight:400;color:#8d6e63;">' + esc(postals.join(' / ')) + '</span>' : '') +
+          '</button>' +
           (whExpanded[p.code] ? whDetailHtml(p) : '') + '</div>';
       }
       html += '</div>';

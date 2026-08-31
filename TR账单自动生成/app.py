@@ -689,10 +689,17 @@ def price_query_api():
 
 @app.route('/api/warehouses', methods=['GET'])
 def warehouses_api():
-    """仓点查询：国家 → 按区域分组仓点码，点开看覆盖渠道价。"""
-    country = request.args.get('country', '').strip()
+    """仓点查询：多国同时筛选（可传多个 country 参数或用逗号分隔）+ 仓点码/邮编关键词搜索。"""
+    # 支持重复 country 参数（前端多选）与逗号分隔两种形式
+    countries = []
+    for v in request.args.getlist('country'):
+        for c in v.split(','):
+            c = c.strip()
+            if c and c not in countries:
+                countries.append(c)
+    keyword = request.args.get('keyword', '').strip()
     try:
-        data = query_warehouses(load_prices(), country)
+        data = query_warehouses(load_prices(), countries=countries, keyword=keyword)
         return app.response_class(
             response=json.dumps(data, ensure_ascii=False),
             mimetype='application/json; charset=utf-8'

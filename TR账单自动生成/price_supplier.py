@@ -161,7 +161,7 @@ def _is_real_channel(name):
 
 
 def _parse_file(fp):
-    """解析单个报价文件 → {update_date, channels:[{name, price, mode}], warehouses}，去噪声、按名排序。"""
+    """解析单个报价文件 → {update_date, channels:[{name, price, mode}], warehouses, wh_postals}，去噪声、按名排序。"""
     p = parse_supplier_files([fp], region_filter=False)
     if not p:
         return None
@@ -180,8 +180,9 @@ def _parse_file(fp):
     update_date = p.get("update_date", "") or ""
     if not update_date:
         update_date = _extract_date_from_filename(fp) or ""
+    cov, postals = extract_warehouse_coverage(fp)
     return {"update_date": update_date, "channels": chs,
-            "warehouses": extract_warehouse_coverage(fp)}
+            "warehouses": cov, "wh_postals": postals}
 
 
 def _parse_weekly_slot(fp):

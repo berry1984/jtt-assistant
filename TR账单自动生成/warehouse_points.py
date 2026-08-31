@@ -3,8 +3,9 @@ FBA 仓点库 + 覆盖渠道价查询模块
 ============================
 - WAREHOUSE_POINTS：各国常用 FBA 仓点静态库（依据天图/每周报价/航乐文件分析整理），
   部署 Railway 无外部依赖也能用。
-- extract_warehouse_coverage(fp)：从供应商报价文件提取 仓点码 → {渠道: 单价}。
-- query_warehouses(data, country)：聚合所有已存报价的覆盖渠道价。
+- extract_warehouse_coverage(fp)：从供应商报价文件提取 仓点码 → {渠道: 单价} 与 邮编关联。
+- query_warehouses(data, countries=None, keyword="")：聚合所有已存报价的覆盖渠道价，
+  支持多国同时筛选 + 仓点码/邮编关键词搜索。
 
 覆盖渠道数据随供应商文件上传后缓存进 price_supplier.load_prices() 的
 `data[sup][country]['warehouses']`；JTT 每周报价的仓点覆盖用
@@ -99,6 +100,61 @@ def _weekly_covers(pattern, code):
     return code in expanded
 
 
+def _pattern_postals(pattern):
+    """从仓点模式提取 5 位邮编：'DTM2-44145' → {'44145'}、'CA ONTARIO 91761' → {'91761'}。
+
+    邮编只取独立的 5 位数字段（代码/范围/前缀模式如 YYZ1-9、97.98.99开头 不产生邮编）。
+    """
+    p = (pattern or '').upper()
+    return set(re.findall(r'(?<!\d)(\d{5})(?!\d)', p))
+
+
+def _digits_of(pattern):
+    """提取模式中的数字片段（邮编前缀）：'97.98.99开头' → ['97','98','99']；'8, 9' → ['8','9']。"""
+    return re.findall(r'\d{1,3}', str(pattern or '').upper())
+
+
+def _is_zone_pattern(pattern):
+    """是否为「邮编/区域段」模式（无具体仓点码，如 美国东岸(邮编0-3)、FBA（8/9邮编）、
+    '97.98.99开头'、'CA ONTARIO 91761'、'3, 2, 1, 0'）。纯仓点码模式（LAX9/DTM2-44145）不算。"""
+    p = (pattern or '').upper()
+    if '邮编' in p or '开头' in p or 'FBA' in p:
+        return True
+    if re.fullmatch(r'[\d,\s]+', p):   # 纯邮编前缀列表："8, 9" / "3, 2, 1, 0"
+        return True
+    if _pattern_postals(p):            # 地名-邮编："NEW BRUNSWICK-08901" / "CA ONTARIO 91761"
+        return True
+    return False
+
+
+def _kw_hits_zone(kw, pattern):
+    """邮编/区域段模式是否命中关键词（邮编段按前缀匹配，避免 '91761' 误命中 '邮编4-7'）。"""
+    p = (pattern or '').upper()
+    if kw in p:
+        return True
+    for pz in _pattern_postals(p):
+        if kw in pz or pz in kw:
+            return True
+    for pr in _digits_of(p):
+        if kw.startswith(pr) or pr.startswith(kw):
+            return True
+    return False
+
+
+def _cell_code_postals(v):
+    """从「CODE-邮编-国家」单元格提取 (code, postal) 对，支持多行（\n 分隔）。
+
+    每行独立匹配，避免多仓点单元格（如 'WRO5-06126-DE\\nWRO5-59225-PL'）串号。
+    """
+    out = []
+    for line in str(v or '').split('\n'):
+        line = line.strip().upper()
+        m = re.match(r'([A-Z]{2,4}\d{1,2})-(\d{5})', line)
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
 # ── 覆盖渠道提取 ──
 
 def _fba_code_cell(v):
@@ -147,20 +203,23 @@ _TRANSPORT_LABELS = {"海运", "空运", "卡航", "铁路", "快递", "专车",
 
 
 def extract_warehouse_coverage(fp):
-    """解析单个供应商报价文件 → {仓点码: {渠道名: 单价}}。
+    """解析单个供应商报价文件 → (覆盖渠道, 邮编关联)。
 
+    cov = {仓点码: {渠道名: 单价}}；postals = {仓点码: {邮编, ...}}。
     只用两类可靠结构（避免查询参考表跨国家仓点码污染）：
       A. 「仓库代码」列（天图加拿大/美西/美转加式）：某行某列标题为「仓库代码」，
          其下行为仓点码（YYZ1/ONT8/LGB8/…），渠道名在该行右侧，价格为行内首个
          KG 单价（华南列）。
       B. sheet 名含仓点码（航乐「德国DTM2.WRO5.HAJ1前置仓」式）：该 sheet 解析出的
-         渠道覆盖这些仓点（用渠道解析价）。
+         渠道覆盖这些仓点（用渠道解析价）；目的仓行（col0=「CODE-邮编-国家」）另
+         提取 邮编→仓点 关联。
     """
     cov = {}
+    postals = {}
     try:
         wb = load_workbook(fp, data_only=True, read_only=True)
     except Exception:
-        return cov
+        return cov, postals
     try:
         for sn in wb.sheetnames:
             if _skip_sheet(sn):
@@ -217,7 +276,8 @@ def extract_warehouse_coverage(fp):
                     for row in rows:
                         if not row or not row[0] or not row[1]:
                             continue
-                        m = FBA_CODE_RE.search(str(row[0]).upper())
+                        cell = str(row[0]).upper()
+                        m = FBA_CODE_RE.search(cell)
                         if not m:
                             continue
                         label = str(row[1]).strip()
@@ -226,31 +286,46 @@ def extract_warehouse_coverage(fp):
                         price = _parse_price_cell(row[2] if len(row) > 2 else None)
                         if price is not None:
                             _set_cov(cov, m.group(1), f"{base}-{label}", price)
+                        # 邮编关联：每行「CODE-邮编」对（跨行独立，避免串号）
+                        for ccode, cpostal in _cell_code_postals(cell):
+                            postals.setdefault(ccode, set()).add(cpostal)
     finally:
         wb.close()
-    return cov
+    return cov, postals
 
 
 # ── 仓点查询 ──
 
-def query_warehouses(data, country=""):
-    """聚合所有已存报价 → {country: {region: [{code, channels:[{supplier,name,price}]}]}}。
+def query_warehouses(data, countries=None, keyword=""):
+    """聚合所有已存报价 → {grid: {country: {region: [{code, postals, channels}]}}, zones: [...]}。
 
     data 来自 price_supplier.load_prices()：
-      {supplier: {country: {update_date, channels, warehouses?, wh_entries?}}}
-    warehouses 为 extract_warehouse_coverage 的产物；wh_entries 为 JTT 每周报价原始条目。
-    只展示 WAREHOUSE_POINTS 内置仓点，覆盖渠道跨供应商合并去重。
+      {supplier: {country: {update_date, channels, warehouses?, wh_postals?, wh_entries?}}}
+    warehouses 为 extract_warehouse_coverage 的产物（覆盖渠道），wh_postals 为其邮编关联；
+    wh_entries 为 JTT 每周报价原始条目（其 wh_pattern 再反解邮编）。
+    countries：可选国家列表（空/None = 全部），多国同时筛选；
+    keyword：仓点码或邮编关键词（子串/前缀匹配，跨国家同时过滤）。
+    grid 只展示 WAREHOUSE_POINTS 内置仓点，覆盖渠道跨供应商合并去重；
+    zones 为命中关键词的「邮编/区域段」渠道（美国邮编前缀段等无具体仓点码的模式）。
     """
-    coverage = {}   # code -> {(supplier, channel): price}
+    if isinstance(countries, str):
+        countries = [c for c in countries.split(',') if c.strip()]
+    sel_countries = set(c for c in (countries or []) if c)
+    kw = (keyword or "").strip().upper()
+
+    coverage = {}       # code -> {(supplier, channel): price}
+    point_postals = {}  # code -> {postal, ...}
     weekly_entries = []
-    for sup, countries in (data or {}).items():
-        for cn, p in countries.items():
+    for sup, sup_countries in (data or {}).items():
+        for cn, p in sup_countries.items():
             for code, chmap in (p.get("warehouses") or {}).items():
                 for ch, price in chmap.items():
                     d = coverage.setdefault(code, {})
                     key = (sup, ch)
                     if key not in d or (price is not None and (d[key] is None or price > d[key])):
                         d[key] = price
+            for code, ps in (p.get("wh_postals") or {}).items():
+                point_postals.setdefault(code, set()).update(ps)
             if p.get("wh_entries"):
                 weekly_entries.extend(p["wh_entries"])
 
@@ -259,9 +334,15 @@ def query_warehouses(data, country=""):
         wq = _load_weekly_module()
         pick_price = wq.pick_tier_price
 
+    def _wh_match(code, pl):
+        """仓点码或邮编子串匹配（'DTM2-44145' 式整体输入也命中）。"""
+        if kw in code.upper():
+            return True
+        return any(kw in pz or pz in kw for pz in pl)
+
     out = {}
     for cn, regions in WAREHOUSE_POINTS.items():
-        if country and cn != country:
+        if sel_countries and cn not in sel_countries:
             continue
         out[cn] = {}
         for region, codes in regions.items():
@@ -270,6 +351,7 @@ def query_warehouses(data, country=""):
                 channels = []
                 for (sup, ch), price in coverage.get(code, {}).items():
                     channels.append({"supplier": sup, "name": ch, "price": price})
+                postals = set(point_postals.get(code, ()))
                 if pick_price:
                     for e in weekly_entries:
                         if not _weekly_covers(e.get("wh_pattern"), code):
@@ -281,6 +363,7 @@ def query_warehouses(data, country=""):
                             "name": e.get("channel_raw") or e.get("channel"),
                             "price": pv,
                         })
+                        postals |= _pattern_postals(e.get("wh_pattern"))
                 ded = {}
                 for c in channels:
                     k = (c["supplier"], c["name"])
@@ -289,6 +372,42 @@ def query_warehouses(data, country=""):
                         ded[k] = c
                 channels = sorted(ded.values(),
                                   key=lambda c: -(c["price"] if c["price"] is not None else 0))
-                pts.append({"code": code, "region": region, "channels": channels})
-            out[cn][region] = pts
-    return out
+                pl = sorted(postals)
+                if kw and not _wh_match(code, pl):
+                    continue
+                pts.append({"code": code, "region": region, "postals": pl, "channels": channels})
+            if pts:
+                out[cn][region] = pts
+
+    # ── 邮编/区域直查（美国邮编前缀段等无具体仓点码的模式） ──
+    # 仅当关键词未命中任何内置仓点（避免 44145 这类全球不唯一邮编同时带出美国中岸渠道）
+    # 且命中关键词时展示；能映射到内置仓点的模式由网格展示，不重复。
+    postal_zones = []
+    if kw and pick_price and not any(out[cn] for cn in out):
+        static_codes = {code for regions in WAREHOUSE_POINTS.values()
+                        for codes in regions.values() for code in codes}
+        seen = set()
+        for e in weekly_entries:
+            pat = str(e.get("wh_pattern") or '').upper()
+            if not pat or not _is_zone_pattern(pat):
+                continue
+            if any(_weekly_covers(pat, code) for code in static_codes):
+                continue  # 模式有具体仓点码 → 网格已展示，避免重复
+            if not _kw_hits_zone(kw, pat):
+                continue
+            price = pick_price(e.get("tiers") or {}, 10 ** 6)
+            pv = round(price, 2) if price is not None else None
+            key = (pat, e.get("section", ""), e.get("channel_raw") or e.get("channel"), pv)
+            if key in seen:
+                continue
+            seen.add(key)
+            postal_zones.append({
+                "pattern": pat,
+                "section": e.get("section", ""),
+                "channel": e.get("channel_raw") or e.get("channel"),
+                "price": pv,
+            })
+            if len(postal_zones) >= 400:
+                break
+
+    return {"grid": out, "zones": postal_zones}
