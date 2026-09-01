@@ -297,7 +297,7 @@ def extract_warehouse_coverage(fp):
 # ── 仓点查询 ──
 
 def query_warehouses(data, countries=None, keyword=""):
-    """聚合所有已存报价 → {grid: {country: {region: [{code, postals, channels}]}}, zones: [...]}。
+    """聚合所有已存报价 → {grid: {...}, zones: [...], weekly_present: bool}。
 
     data 来自 price_supplier.load_prices()：
       {supplier: {country: {update_date, channels, warehouses?, wh_postals?, wh_entries?}}}
@@ -410,4 +410,4 @@ def query_warehouses(data, countries=None, keyword=""):
             if len(postal_zones) >= 400:
                 break
 
-    return {"grid": out, "zones": postal_zones}
+    return {"grid": out, "zones": postal_zones, "weekly_present": bool(weekly_entries)}

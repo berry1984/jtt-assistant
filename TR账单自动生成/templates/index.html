@@ -998,7 +998,11 @@ function whRender(data) {
   const kw = document.getElementById('whSearch').value.trim();
   if (!countries.length && !zones.length) {
     results.innerHTML = '<div style="padding:20px;text-align:center;color:#999;">' +
-      (kw ? '未找到匹配仓点或邮编/区域' : '暂无仓点数据') + '</div>';
+      (kw
+        ? (data.weekly_present
+            ? '未找到匹配仓点或邮编/区域'
+            : '未找到匹配仓点；邮编段直查（如美国 91761 / 08901）需先上传 <strong>JTT每周报价表</strong>')
+        : '暂无仓点数据') + '</div>';
     return;
   }
   let html = '';
