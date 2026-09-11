@@ -571,30 +571,30 @@ def _apply_export_template_price(out, template_entries):
 
 
 def _build_template_index(template_entries):
-    """按 (仓库/收件人, 服务) 与 (仓库/收件人, '') 建二级索引，供 SO 取不到时兜底。
+    """按 (仓库/收件人, 服务) 与 (仓库/收件人, '') 建二级索引 → (运单号, 条目)。
 
     只保留「价格唯一」的键：同一键下若存在多组不同的 应收/应付/供应商，说明
     该仓点在该渠道下有多个价，兜底匹配会张冠李戴，故置 None 不参与兜底。
     """
     buckets = {}
-    for info in (template_entries or {}).values():
+    for so, info in (template_entries or {}).items():
         names = {str(info.get('warehouse') or '').strip(),
                  str(info.get('recipient') or '').strip()}
         names.discard('')
         svc = str(info.get('service') or '').strip()
         for name in names:
             for key in ((name, svc), (name, '')):
-                buckets.setdefault(key, []).append(info)
+                buckets.setdefault(key, []).append((so, info))
     index = {}
     for key, items in buckets.items():
         prices = {(i.get('e_price'), i.get('f_price'), i.get('supplier_ch'))
-                  for i in items}
+                  for _so, i in items}
         index[key] = items[0] if len(prices) == 1 else None
     return index
 
 
 def _find_template_by_warehouse(out, index):
-    """SO号 取不到时的兜底：按 仓库(收件人) + 渠道 反查模版条目。
+    """SO号 取不到时的兜底：按 仓库(收件人) + 渠道 反查模版，返回 (运单号, 条目)。
 
     发票侧仓库可能带 '-Amazon' 后缀，故原值与 clean_template_warehouse 清洗值
     都试一遍；先带渠道精确匹配，再退化为只按仓点。
@@ -607,42 +607,72 @@ def _find_template_by_warehouse(out, index):
         if not name:
             continue
         for key in ((name, svc), (name, '')):
-            info = index.get(key)
-            if info:
-                return info
+            found = index.get(key)
+            if found:
+                return found
     return None
 
 
-def _apply_export_template_pass(output_rows, template_entries):
+def _apply_export_template_pass(output_rows, template_entries, so_order_times=None):
     """模版收尾 pass：先按 SO号 覆盖，取不到 SO 时按 仓库/收件人(+渠道) 兜底。
 
     海外仓/快递派单的箱号前缀常与拣货导出的「扩展箱号」对不上（如 OWS 单号
     vs IBR 长号），导致 so_no 为空、按 SO 直取整行落空；这类行用发票侧
-    收件人（仓点）在有唯一价的模版条目上兜回。
+    收件人（仓点）在有唯一价的模版条目上兜回，**并把该模版行的运单号回填成
+    系统SO号**——下游 TR账单按 SO号 分组，B 列为空的行会被整行丢弃。
     """
     index = _build_template_index(template_entries)
-    matched = so_matched = 0
-    fallbacks = []
-    unmatched_sos = []
+
+    # 第一轮：按 SO号 直取（模版价权威），顺带登记已被占用的运单号
+    so_matched = 0
+    used_sos = set()
+    pending = []
     for out in output_rows:
         if _apply_export_template_price(out, template_entries):
-            matched += 1
             so_matched += 1
+            so = str(out.get('so_no') or '').strip()
+            if so:
+                used_sos.add(so)
+        else:
+            pending.append(out)
+
+    # 第二轮：SO 落空的行按 仓点/收件人 兜底
+    matched = so_matched
+    fallbacks = []
+    conflicts = []
+    unmatched_sos = []
+    for out in pending:
+        found = _find_template_by_warehouse(out, index)
+        so, info = found if found else (None, None)
+        label = out.get('so_no') or '(无SO)'
+        # 模版里该仓点唯一的那条已被别的行按 SO 取走 → 不是本行，放弃兜底
+        if info is not None and so and so in used_sos:
+            note = f"{info.get('warehouse') or '?'}({info.get('service') or '?'})"
+            if note not in conflicts:
+                conflicts.append(note)
+            info = None
+        if info is None:
+            if label not in unmatched_sos:
+                unmatched_sos.append(label)
             continue
-        info = _find_template_by_warehouse(out, index)
-        if info:
-            _apply_template_info(out, info)
-            matched += 1
-            fallbacks.append(f"{info.get('warehouse') or '?'}"
-                             f"({info.get('service') or '?'})→应收{info.get('e_price')}")
-            continue
-        so = out.get('so_no') or '(无SO)'
-        if so not in unmatched_sos:
-            unmatched_sos.append(so)
+        _apply_template_info(out, info)
+        matched += 1
+        if so:
+            out['so_no'] = so
+            used_sos.add(so)
+            if so_order_times and not out.get('order_time'):
+                t = so_order_times.get(so)
+                if t is not None:
+                    out['order_time'] = t
+        fallbacks.append(f"{info.get('warehouse') or '?'}"
+                         f"({info.get('service') or '?'})→SO {so or '?'}，应收{info.get('e_price')}")
+
     print(f"  🧾 报价模版匹配: {matched}/{len(output_rows)} 行"
           f"（按SO号 {so_matched}，按收件人兜底 {len(fallbacks)}）")
     if fallbacks:
         print(f"  ↩️  收件人兜底命中：{'; '.join(sorted(set(fallbacks)))}")
+    if conflicts:
+        print(f"  ⚠️  运单号已被其他行占用，放弃兜底：{'; '.join(conflicts)}")
     if unmatched_sos:
         print(f"  ⚠️  报价模版未覆盖：{', '.join(unmatched_sos)}")
     return matched
@@ -747,7 +777,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
 
     # ── 收尾 pass：导出报价表模版（保证模版价权威，不被前面的报价逻辑覆盖）──
     if price_mode == 'export_template':
-        _apply_export_template_pass(output_rows, export_template)
+        _apply_export_template_pass(output_rows, export_template, so_order_times)
 
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
@@ -1061,7 +1091,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
     # ── 收尾 pass：导出报价表模版（保证模版价权威，不被前面的报价逻辑覆盖）──
     if price_mode == 'export_template':
-        _apply_export_template_pass(output_rows, export_template)
+        _apply_export_template_pass(output_rows, export_template, so_order_times)
 
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")

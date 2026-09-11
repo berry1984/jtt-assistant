@@ -287,8 +287,9 @@ def parse_export_quotation_template(filepath) -> dict
     """导出报价表模版 → {运单号: {service, warehouse, recipient, e_price, f_price, supplier_ch}}
     仓库代码为空时回退收件人；两者都保留（recipient 供 SO 取不到时兜底匹配）"""
 
-def _apply_export_template_pass(output_rows, template_entries) -> int
-    """按 SO号 覆盖；SO取不到时按 收件人/仓点(+渠道) 兜底（同键多价拒绝兜底）"""
+def _apply_export_template_pass(output_rows, template_entries, so_order_times=None) -> int
+    """按 SO号 覆盖；SO取不到时按 收件人/仓点(+渠道) 兜底并回填 SO号
+    （同键多价、或运单号已被其他行占用 → 拒绝兜底）"""
 
 def generate_picking_output(invoice_file, system_file, output_path, ...) -> int
     """返回总箱数（price_mode=export_template 时按 SO号 直取模版价，取不到 SO 则收件人兜底）"""
