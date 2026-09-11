@@ -22,7 +22,8 @@ Web: `POST /picking_export` with `picking_invoice[]`, `picking_system`, `picking
    - `quotation` → 仓库代码 → 报价表 → 应收/应付单价、供应商渠道
    - `weekly` → 渠道+仓点+计费重 → JTT每周渠道报价表 → 应收单价
    - `export_template` → SO号=运单号 → 导出报价表模版 → 服务/仓库/应收/应付/供应商服务
-4. 无匹配 → V/W/X/Y 留空标红；报价模版未覆盖的 SO → C/F/G/H 留空、A–H 标红
+     （SO取不到时按收件人/仓点+渠道兜底，同键多价则拒绝兜底）
+4. 无匹配 → V/W/X/Y 留空标红；报价模版未覆盖 → C/F/G/H 留空、A–H 标红
 
 ## Defaults
 

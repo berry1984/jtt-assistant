@@ -256,13 +256,17 @@ def parse_export_quotation_template(filepath):
             duplicates.append(so_no)
             continue
         wh = str(cell_val(r, col_wh) or '').strip()
+        recipient = str(cell_val(r, col_rcpt) or '').strip()
         if not wh:
-            wh = str(cell_val(r, col_rcpt) or '').strip()
+            wh = recipient
         e_price = _to_float(cell_val(r, col_e))
         f_price = _to_float(cell_val(r, col_f))
         mapping[so_no] = {
             'service': str(cell_val(r, col_svc) or '').strip(),
             'warehouse': clean_template_warehouse(wh),
+            # 收件人原样保留：SO号 取不到时用它兜底匹配（如 PENG-P134 这类
+            # 仓库代码为空的海外仓单，收件人里就是仓点名）
+            'recipient': recipient,
             'e_price': e_price if e_price is not None else '',
             'f_price': f_price if f_price is not None else '',
             'supplier_ch': str(cell_val(r, col_sup) or '').strip(),
@@ -531,6 +535,21 @@ def _apply_weekly_price(out, weekly_entries, price_mode='weekly_first'):
     return True
 
 
+def _apply_template_info(out, info):
+    """把模版条目写进输出行（SO 命中与收件人回退命中共用）。
+
+    覆盖 warehouse / e_price / f_price / supplier_ch，并写 template_service
+    （客户渠道 C 列与「快递派」计费重判定都读它）；清掉可能已置的 _unmatched。
+    """
+    out['template_service'] = info.get('service', '')
+    if info.get('warehouse'):
+        out['warehouse'] = info['warehouse']
+    out['e_price'] = info.get('e_price', '')
+    out['f_price'] = info.get('f_price', '')
+    out['supplier_ch'] = info.get('supplier_ch', '')
+    out.pop('_unmatched', None)
+
+
 def _apply_export_template_price(out, template_entries):
     """导出报价表模版：按 SO号=运单号 直取 服务/仓库/应收/应付/供应商服务。
 
@@ -547,29 +566,85 @@ def _apply_export_template_price(out, template_entries):
         out['f_price'] = ''
         out['supplier_ch'] = ''
         return False
-    out['template_service'] = info.get('service', '')
-    if info.get('warehouse'):
-        out['warehouse'] = info['warehouse']
-    out['e_price'] = info.get('e_price', '')
-    out['f_price'] = info.get('f_price', '')
-    out['supplier_ch'] = info.get('supplier_ch', '')
+    _apply_template_info(out, info)
     return True
 
 
+def _build_template_index(template_entries):
+    """按 (仓库/收件人, 服务) 与 (仓库/收件人, '') 建二级索引，供 SO 取不到时兜底。
+
+    只保留「价格唯一」的键：同一键下若存在多组不同的 应收/应付/供应商，说明
+    该仓点在该渠道下有多个价，兜底匹配会张冠李戴，故置 None 不参与兜底。
+    """
+    buckets = {}
+    for info in (template_entries or {}).values():
+        names = {str(info.get('warehouse') or '').strip(),
+                 str(info.get('recipient') or '').strip()}
+        names.discard('')
+        svc = str(info.get('service') or '').strip()
+        for name in names:
+            for key in ((name, svc), (name, '')):
+                buckets.setdefault(key, []).append(info)
+    index = {}
+    for key, items in buckets.items():
+        prices = {(i.get('e_price'), i.get('f_price'), i.get('supplier_ch'))
+                  for i in items}
+        index[key] = items[0] if len(prices) == 1 else None
+    return index
+
+
+def _find_template_by_warehouse(out, index):
+    """SO号 取不到时的兜底：按 仓库(收件人) + 渠道 反查模版条目。
+
+    发票侧仓库可能带 '-Amazon' 后缀，故原值与 clean_template_warehouse 清洗值
+    都试一遍；先带渠道精确匹配，再退化为只按仓点。
+    """
+    if not index:
+        return None
+    raw = str(out.get('warehouse') or '').strip()
+    svc = str(out.get('service') or '').strip()
+    for name in (raw, clean_template_warehouse(raw)):
+        if not name:
+            continue
+        for key in ((name, svc), (name, '')):
+            info = index.get(key)
+            if info:
+                return info
+    return None
+
+
 def _apply_export_template_pass(output_rows, template_entries):
-    """模版收尾 pass：逐行按 SO号 覆盖，并汇总未覆盖的 SO。"""
-    matched = 0
+    """模版收尾 pass：先按 SO号 覆盖，取不到 SO 时按 仓库/收件人(+渠道) 兜底。
+
+    海外仓/快递派单的箱号前缀常与拣货导出的「扩展箱号」对不上（如 OWS 单号
+    vs IBR 长号），导致 so_no 为空、按 SO 直取整行落空；这类行用发票侧
+    收件人（仓点）在有唯一价的模版条目上兜回。
+    """
+    index = _build_template_index(template_entries)
+    matched = so_matched = 0
+    fallbacks = []
     unmatched_sos = []
     for out in output_rows:
         if _apply_export_template_price(out, template_entries):
             matched += 1
-        else:
-            so = out.get('so_no') or '(无SO)'
-            if so not in unmatched_sos:
-                unmatched_sos.append(so)
-    print(f"  🧾 报价模版匹配: {matched}/{len(output_rows)} 行")
+            so_matched += 1
+            continue
+        info = _find_template_by_warehouse(out, index)
+        if info:
+            _apply_template_info(out, info)
+            matched += 1
+            fallbacks.append(f"{info.get('warehouse') or '?'}"
+                             f"({info.get('service') or '?'})→应收{info.get('e_price')}")
+            continue
+        so = out.get('so_no') or '(无SO)'
+        if so not in unmatched_sos:
+            unmatched_sos.append(so)
+    print(f"  🧾 报价模版匹配: {matched}/{len(output_rows)} 行"
+          f"（按SO号 {so_matched}，按收件人兜底 {len(fallbacks)}）")
+    if fallbacks:
+        print(f"  ↩️  收件人兜底命中：{'; '.join(sorted(set(fallbacks)))}")
     if unmatched_sos:
-        print(f"  ⚠️  报价模版未覆盖的 SO：{', '.join(unmatched_sos)}")
+        print(f"  ⚠️  报价模版未覆盖：{', '.join(unmatched_sos)}")
     return matched
 
 

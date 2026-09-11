@@ -284,10 +284,14 @@ def find_history_match(records, name, weight, length, width, height) -> dict|Non
     """匹配箱规历史（6种长宽高排列组合 + 重量±0.5）"""
 
 def parse_export_quotation_template(filepath) -> dict
-    """导出报价表模版 → {运单号: {service, warehouse, e_price, f_price, supplier_ch}}"""
+    """导出报价表模版 → {运单号: {service, warehouse, recipient, e_price, f_price, supplier_ch}}
+    仓库代码为空时回退收件人；两者都保留（recipient 供 SO 取不到时兜底匹配）"""
+
+def _apply_export_template_pass(output_rows, template_entries) -> int
+    """按 SO号 覆盖；SO取不到时按 收件人/仓点(+渠道) 兜底（同键多价拒绝兜底）"""
 
 def generate_picking_output(invoice_file, system_file, output_path, ...) -> int
-    """返回总箱数（price_mode=export_template 时按 SO号 直取模版价）"""
+    """返回总箱数（price_mode=export_template 时按 SO号 直取模版价，取不到 SO 则收件人兜底）"""
 
 def generate_picking_output_multi(invoice_files, system_file, output_path, ...) -> (str, int)
     """支持多份发票合并输出"""
