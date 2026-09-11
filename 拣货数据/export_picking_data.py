@@ -6,18 +6,24 @@
   2. 系统导出拣货数据 (.xlsx) — 运单号+扩展箱号对照
   3. 箱规历史数据库 (.xlsx) — 品名+客户箱规 → 标准箱规
   4. 内部拣货数据参考值模版 (.xlsx) — 输出格式+公式
+  5. 报价文件 (.xlsx) — 按 报价方式(price_mode) 解析：报价单 / JTT每周渠道报价表 /
+     导出报价表模版（按 SO号=运单号 直取 服务/仓库/应收/应付/供应商服务）
 
 输出：
   内部拣货数据参考值 (.xlsx) — 按 SO 号归组，匹配历史箱规
 
 匹配逻辑：
   - 发票每行货箱编号 → 前12位 = FBA ID → 匹配系统导出的扩展箱号 → 取运单号(SO号)
+  - 客户渠道：报价方式=导出报价表模版时取模版「服务」；
+    否则回退报价表 JTT渠道 / 发票「服务」列
+  - 仓库代码：取发票「收件人姓名」（地址信息）；导出报价表模版命中时以模版「仓库代码」为准
   - 箱规历史：品名+重量/尺寸匹配 → 取标准箱规(V/W/X/Y)
   - 无历史匹配 → V/W/X/Y 留空，标红
+  - 报价模版未覆盖的 SO → C/F/G/H 留空，该组 A–H 标红
 
 用法：
   python3 export_picking_data.py
-  python3 export_picking_data.py <发票文件> <系统导出文件> [输出文件]
+  python3 export_picking_data.py <发票文件> <系统导出文件> [输出文件] [导出报价表模版] [报价方式]
 """
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, Color
@@ -181,6 +187,95 @@ def parse_system_export(filepath):
                 so_order_times[so_no] = t
     wb.close()
     return prefix_to_so, so_order_times
+
+
+def clean_template_warehouse(code):
+    """导出报价表模版的仓码清洗：仅当 '-' 后是 Amazon 才取 '-' 前。
+
+    TCY2-Amazon → TCY2；PENG-P134 → PENG-P134（PENG 不是亚马逊仓，
+    截断会出错）。口径同 gen_bill 的 clean_wh，但不 import 该模块以免耦合。
+    """
+    s = str(code or '').strip()
+    if '-' not in s:
+        return s
+    head, _, tail = s.partition('-')
+    return head if tail.strip().lower().startswith('amazon') else s
+
+
+def parse_export_quotation_template(filepath):
+    """解析「导出报价表模版」，返回 {运单号: {service, warehouse, e_price,
+    f_price, supplier_ch}}。
+
+    该模版是按运单号(SO号)成行的系统导出，自带 服务 / 仓库代码 / 收件人 /
+    应收运费单价 / 成本运费单价 / 供应商服务，按 SO 一一对应取价，从根上绕开
+    「渠道+仓点」的歧义。
+
+    按表头名定位列，先精确匹配再子串匹配（源文件同时存在「服务」与「供应商服务」
+    两列，必须精确命中「服务」）。仓库代码为空时回退「收件人」，再按
+    clean_template_warehouse 清洗。同一运单号重复出现时取首条并打印告警。
+    """
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
+    headers = {}
+    for c in range(1, ws.max_column + 1):
+        headers[c] = str(ws.cell(row=1, column=c).value or '').strip()
+
+    def find_col(exact, *needles):
+        for c, h in headers.items():
+            if h == exact:
+                return c
+        for c, h in headers.items():
+            if any(n in h for n in needles):
+                return c
+        return None
+
+    col_so   = find_col('运单号')
+    col_svc  = find_col('服务')
+    col_wh   = find_col('仓库代码', '仓库')
+    col_rcpt = find_col('收件人')
+    col_e    = find_col('应收运费单价', '应收')
+    col_f    = find_col('成本运费单价', '成本', '应付')
+    col_sup  = find_col('供应商服务', '供应商')
+
+    if col_so is None:
+        wb.close()
+        return {}
+
+    def cell_val(r, col):
+        return ws.cell(row=r, column=col).value if col else None
+
+    mapping = {}
+    duplicates = []
+    for r in range(2, ws.max_row + 1):
+        so_no = str(cell_val(r, col_so) or '').strip()
+        if not so_no:
+            continue
+        if so_no in mapping:
+            duplicates.append(so_no)
+            continue
+        wh = str(cell_val(r, col_wh) or '').strip()
+        if not wh:
+            wh = str(cell_val(r, col_rcpt) or '').strip()
+        e_price = _to_float(cell_val(r, col_e))
+        f_price = _to_float(cell_val(r, col_f))
+        mapping[so_no] = {
+            'service': str(cell_val(r, col_svc) or '').strip(),
+            'warehouse': clean_template_warehouse(wh),
+            'e_price': e_price if e_price is not None else '',
+            'f_price': f_price if f_price is not None else '',
+            'supplier_ch': str(cell_val(r, col_sup) or '').strip(),
+        }
+    wb.close()
+    if duplicates:
+        print(f"  ⚠️  报价模版重复运单号（取首条）：{', '.join(sorted(set(duplicates)))}")
+    return mapping
+
+
+def _row_channel(out):
+    """客户渠道：优先导出报价表模版的「服务」，其次报价单 JTT 渠道，回退发票「服务」。"""
+    return out.get('template_service') or out.get('jtt_ch') or out.get('service') or ''
 
 
 def parse_history(filepath):
@@ -407,11 +502,12 @@ def _apply_weekly_price(out, weekly_entries, price_mode='weekly_first'):
       - quotation_first: 报价表优先，匹配不到用每周报价表
       - weekly_only:     仅每周报价表，匹配不到 E 列留空
       - quotation_only:  仅报价表，不匹配每周报价表
+      - export_template: 导出报价表模版，按 SO号 直取，不做任何渠道/仓点推断
     返回是否匹配成功。
     """
-    if not weekly_entries or price_mode == 'quotation_only':
+    if not weekly_entries or price_mode in ('quotation_only', 'export_template'):
         return False
-    channel = out.get('jtt_ch') or out.get('service') or ''
+    channel = _row_channel(out)
     cw = wq.compute_chargeable_weight(out, channel)
     if cw is None:
         return False
@@ -435,14 +531,60 @@ def _apply_weekly_price(out, weekly_entries, price_mode='weekly_first'):
     return True
 
 
+def _apply_export_template_price(out, template_entries):
+    """导出报价表模版：按 SO号=运单号 直取 服务/仓库/应收/应付/供应商服务。
+
+    命中 → 覆盖 warehouse / e_price / f_price / supplier_ch，并写 template_service
+    （客户渠道 C 列与「快递派」计费重判定都读它）；
+    未命中 → 标记 _unmatched，E列仓库保留发票侧回退值便于人工定位，
+    e_price/f_price/supplier_ch 留空。
+    返回是否命中。
+    """
+    info = template_entries.get(out.get('so_no', '')) if template_entries else None
+    if not info:
+        out['_unmatched'] = True
+        out['e_price'] = ''
+        out['f_price'] = ''
+        out['supplier_ch'] = ''
+        return False
+    out['template_service'] = info.get('service', '')
+    if info.get('warehouse'):
+        out['warehouse'] = info['warehouse']
+    out['e_price'] = info.get('e_price', '')
+    out['f_price'] = info.get('f_price', '')
+    out['supplier_ch'] = info.get('supplier_ch', '')
+    return True
+
+
+def _apply_export_template_pass(output_rows, template_entries):
+    """模版收尾 pass：逐行按 SO号 覆盖，并汇总未覆盖的 SO。"""
+    matched = 0
+    unmatched_sos = []
+    for out in output_rows:
+        if _apply_export_template_price(out, template_entries):
+            matched += 1
+        else:
+            so = out.get('so_no') or '(无SO)'
+            if so not in unmatched_sos:
+                unmatched_sos.append(so)
+    print(f"  🧾 报价模版匹配: {matched}/{len(output_rows)} 行")
+    if unmatched_sos:
+        print(f"  ⚠️  报价模版未覆盖的 SO：{', '.join(unmatched_sos)}")
+    return matched
+
+
 def generate_picking_output(invoice_file, system_file, output_path,
                               history_file=None, template_file=None,
                               quotation_file=None, weekly_quotation_file=None,
-                              price_mode='weekly_first'):
+                              price_mode='weekly_first', export_template_file=None):
     """核心入口：生成内部拣货数据参考值。
 
+    export_template_file：导出报价表模版（price_mode='export_template' 时使用）。
+        提供时按 SO号=运单号 直取 服务/仓库/应收单价/应付单价/供应商服务，
+        覆盖报价单/每周报价的结果；模版未覆盖的 SO 留空标红。
     price_mode（报价方式）：weekly_first 每周优先（默认）/ quotation_first 报价表优先 /
-        weekly_only 仅每周（匹配不到 E 列留空）/ quotation_only 仅报价表。
+        weekly_only 仅每周（匹配不到 E 列留空）/ quotation_only 仅报价表 /
+        export_template 导出报价表模版（按 SO号 直取）。
     """
     if history_file is None:
         history_file = HISTORY_FILE
@@ -457,6 +599,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
     weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
+    export_template = parse_export_quotation_template(export_template_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -465,6 +608,8 @@ def generate_picking_output(invoice_file, system_file, output_path,
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
     print(f"  💰 报价单: {len(quotation_data)} 条")
+    if export_template:
+        print(f"  🧾 导出报价表模版: {len(export_template)} 条运单号（按 SO号 直取）")
     if weekly_entries:
         print(f"  💹 每周报价表: {len(weekly_entries)} 条（按 渠道+仓点+计费重 匹配应收单价）")
 
@@ -524,6 +669,10 @@ def generate_picking_output(invoice_file, system_file, output_path,
         output_rows.append(out)
         if hm is None:
             missing_history.append(out)
+
+    # ── 收尾 pass：导出报价表模版（保证模版价权威，不被前面的报价逻辑覆盖）──
+    if price_mode == 'export_template':
+        _apply_export_template_pass(output_rows, export_template)
 
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
@@ -626,10 +775,12 @@ def _write_output_to_template(output_rows, template_file, output_path):
         c2 = ws.cell(row=start_row, column=2)
         c2.value = group[0]['so_no']
         _style_data_cell(c2)
-        # C列=客户渠道：优先取报价单的 JTT物流渠道，无匹配时回退发票"服务"列
-        channel = group[0].get('jtt_ch') or group[0].get('service', '')
+        # C列=客户渠道：优先取导出报价表模版的「服务」，其次报价单的 JTT物流渠道，
+        # 无匹配时回退发票"服务"列；报价模版未覆盖该 SO 时留空（整组标红提示）
+        unmatched = bool(group[0].get('_unmatched'))
+        channel = _row_channel(group[0])
         c3 = ws.cell(row=start_row, column=3)
-        c3.value = channel
+        c3.value = '' if unmatched else channel
         _style_data_cell(c3)
         # D列=国家
         c4 = ws.cell(row=start_row, column=4)
@@ -674,6 +825,10 @@ def _write_output_to_template(output_rows, template_file, output_path):
                 cell = ws.cell(row=r, column=col)
                 cell.value = val
                 _style_data_cell(cell)
+            # 报价模版未覆盖该 SO → A–H 整行标红（A/B/C 首行填充 + 逐行打更稳妥）
+            if unmatched:
+                for col in range(1, 9):
+                    ws.cell(row=r, column=col).fill = red_fill
             # 无历史匹配 → 标红
             if all(v is None for v in [w_val, x_val, y_val, z_val]):
                 for col in [23, 24, 25, 26]:
@@ -729,7 +884,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
 def generate_picking_output_multi(invoice_files, system_file, output_path,
                                    history_file=None, template_file=None,
                                    quotation_file=None, weekly_quotation_file=None,
-                                   price_mode='weekly_first'):
+                                   price_mode='weekly_first', export_template_file=None):
     """支持多份发票合并输出一份拣货数据
 
     参数:
@@ -742,7 +897,10 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         weekly_quotation_file: JTT每周渠道报价表路径（可选，提供则按 渠道+仓点+计费重
             匹配每周报价并覆盖 E列应收单价，匹配不到回退报价表）
         price_mode: 报价方式（weekly_first 每周优先 / quotation_first 报价表优先 /
-            weekly_only 仅每周 / quotation_only 仅报价表）
+            weekly_only 仅每周 / quotation_only 仅报价表 /
+            export_template 导出报价表模版，按 SO号 直取）
+        export_template_file: 导出报价表模版路径（可选，price_mode='export_template'
+            时按 SO号=运单号 直取 服务/仓库/应收/应付/供应商服务）
     返回:
         (output_path, total_boxes)
     """
@@ -759,6 +917,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     history_records = parse_history(history_file)
     quotation_data = parse_quotation(quotation_file)
     weekly_entries = wq.parse_weekly_quotation(weekly_quotation_file)
+    export_template = parse_export_quotation_template(export_template_file)
 
     if not data_rows:
         raise ValueError("发票中未找到有效数据行")
@@ -767,6 +926,8 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
     print(f"  🔗 系统SO映射: {len(prefix_to_so)} 个FBA前缀")
     print(f"  📚 箱规历史: {len(history_records)} 条记录")
     print(f"  💰 报价单: {len(quotation_data)} 条")
+    if export_template:
+        print(f"  🧾 导出报价表模版: {len(export_template)} 条运单号（按 SO号 直取）")
     if weekly_entries:
         print(f"  💹 每周报价表: {len(weekly_entries)} 条（按 渠道+仓点+计费重 匹配应收单价）")
 
@@ -823,6 +984,10 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         if hm is None:
             missing_history.append(out)
 
+    # ── 收尾 pass：导出报价表模版（保证模版价权威，不被前面的报价逻辑覆盖）──
+    if price_mode == 'export_template':
+        _apply_export_template_pass(output_rows, export_template)
+
     total_boxes = sum(r['box_count'] for r in output_rows)
     print(f"  📊 输出行: {len(output_rows)} 行, 总箱数: {total_boxes}")
     print(f"  ⚠️  无历史匹配: {len(missing_history)} 行")
@@ -839,8 +1004,10 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
 
 # ── CLI 入口 ──
 
-def main(invoice_file=None, system_file=None, output_file=None):
-    """CLI 主入口"""
+def main(invoice_file=None, system_file=None, output_file=None,
+         export_template_file=None, price_mode='weekly_first'):
+    """CLI 主入口（export_template_file：导出报价表模版，可选；
+    price_mode：报价方式，默认 weekly_first）"""
     if invoice_file is None:
         files = sorted([
             os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)
@@ -869,8 +1036,16 @@ def main(invoice_file=None, system_file=None, output_file=None):
     if m:
         date_str = m.group(1)
 
+    print(f"📂 发票: {os.path.basename(invoice_file)}")
+    print(f"📂 系统导出拣货数据: {os.path.basename(system_file)}")
+    if export_template_file:
+        print(f"📂 导出报价表模版: {os.path.basename(export_template_file)}")
+    print(f"📋 报价方式: {price_mode}")
+
     tmp_path = os.path.join(DATA_DIR, '_temp_output.xlsx')
-    result_path, total_boxes = generate_picking_output(invoice_file, system_file, tmp_path)
+    result_path, total_boxes = generate_picking_output(
+        invoice_file, system_file, tmp_path,
+        price_mode=price_mode, export_template_file=export_template_file)
 
     # 生成带日期+箱数的文件名并重命名
     if output_file is None:
@@ -883,22 +1058,10 @@ def main(invoice_file=None, system_file=None, output_file=None):
 
     return invoice_file, system_file, output_file
 
-    print(f"📂 发票: {os.path.basename(invoice_file)}")
-    print(f"📂 系统导出拣货数据: {os.path.basename(system_file)}")
-    print(f"📂 输出: {os.path.basename(output_file)}")
-    print()
-
-    result = generate_picking_output(invoice_file, system_file, output_file)
-    return invoice_file, system_file, result
-
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
-        if len(sys.argv) >= 4:
-            main(sys.argv[1], sys.argv[2], sys.argv[3])
-        elif len(sys.argv) >= 3:
-            main(sys.argv[1], sys.argv[2])
-        else:
-            main(sys.argv[1])
+        # 参数：发票 [系统导出拣货数据] [输出文件] [导出报价表模版] [报价方式]
+        main(*sys.argv[1:6])
     else:
         main()

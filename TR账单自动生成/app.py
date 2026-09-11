@@ -447,10 +447,12 @@ def picking_export():
     """
     新规则（2026-06-10）：
     上传 发票 + 系统导出拣货数据 → 匹配箱规历史数据库 → 输出内部拣货数据参考值
-    报价来源（quotation_source）：单个报价文件上传，按所选来源解析：
-      - quotation  按报价单解析 E/F/供应商渠道等识别信息（不传用服务器默认报价单）
-      - weekly     按 JTT每周渠道报价表解析，按 渠道+仓点+计费重 匹配应收单价（E列），
-                   匹配不到回退报价单（服务器默认报价单仍提供识别信息）
+    报价来源（quotation_source）：单个报价文件必传，按所选来源解析：
+      - quotation       按报价单解析 E/F/供应商渠道等识别信息
+      - weekly          按 JTT每周渠道报价表解析，按 渠道+仓点+计费重 匹配应收单价（E列），
+                        匹配不到回退报价单
+      - export_template 按 导出报价表模版 解析，按 SO号=运单号 直取
+                        服务/仓库代码/应收单价/应付单价/供应商服务，模版未覆盖的 SO 留空标红
     """
     sys.path.insert(0, PICKING_DIR)
 
@@ -459,13 +461,10 @@ def picking_export():
     history_file = request.files.get('picking_history')
     quotation_file = request.files.get('picking_quotation')
     weekly_file = None
+    export_template_file = None
     quotation_source = (request.form.get('quotation_source') or 'quotation').strip()
-    if quotation_source not in ('quotation', 'weekly'):
+    if quotation_source not in ('quotation', 'weekly', 'export_template'):
         quotation_source = 'quotation'
-    if quotation_source == 'weekly' and quotation_file and quotation_file.filename:
-        # 来源选「JTT每周渠道报价表」：上传文件按每周报价表解析
-        weekly_file = quotation_file
-        quotation_file = None
 
     if not invoice_files or all(f.filename == '' for f in invoice_files):
         flash('请上传至少一份发票文件')
@@ -473,6 +472,18 @@ def picking_export():
     if not system_file or system_file.filename == '':
         flash('请上传系统导出拣货数据文件')
         return redirect('/picking')
+    if not quotation_file or quotation_file.filename == '':
+        flash('请上传报价文件（报价单 / JTT每周渠道报价表 / 导出报价表模版）')
+        return redirect('/picking')
+
+    if quotation_source == 'weekly':
+        # 来源选「JTT每周渠道报价表」：上传文件按每周报价表解析
+        weekly_file = quotation_file
+        quotation_file = None
+    elif quotation_source == 'export_template':
+        # 来源选「导出报价表模版」：上传文件按 SO号=运单号 直取
+        export_template_file = quotation_file
+        quotation_file = None
 
     tmp_dir = tempfile.mkdtemp(dir=app.config['UPLOAD_FOLDER'])
     try:
@@ -505,28 +516,39 @@ def picking_export():
                 flash(f'服务器缺少箱规历史数据库: {history_path}')
                 return redirect('/picking')
 
-        # 报价单：上传了就使用上传的，否则用服务器默认
+        # 报价文件：必传（来源选 quotation 时按报价单解析）
+        quotation_path = None
         if quotation_file and quotation_file.filename:
             quotation_path = os.path.join(tmp_dir, 'quotation.xlsx')
             quotation_file.save(quotation_path)
-        else:
-            quotation_path = QUOTATION_FILE
-            if not os.path.exists(quotation_path):
-                flash(f'服务器缺少报价单: {quotation_path}')
-                return redirect('/picking')
 
-        # 报价来源=JTT每周渠道报价表：可选，上传了才按每周报价表解析（按 渠道+仓点+计费重 匹配应收单价E列，回退报价单）
+        # 报价来源=JTT每周渠道报价表：按每周报价表解析（按 渠道+仓点+计费重 匹配应收单价E列，回退报价单）
         weekly_path = None
         if weekly_file and weekly_file.filename:
             weekly_path = os.path.join(tmp_dir, 'weekly.xlsx')
             weekly_file.save(weekly_path)
+
+        # 报价来源=导出报价表模版：按 SO号=运单号 直取
+        export_template_path = None
+        if export_template_file and export_template_file.filename:
+            export_template_path = os.path.join(tmp_dir, 'export_template.xlsx')
+            export_template_file.save(export_template_path)
+
+        # 报价方式：真正传给引擎（此前未传，weekly_first 无条件生效）
+        price_mode = {
+            'quotation': 'quotation_first',
+            'weekly': 'weekly_first',
+            'export_template': 'export_template',
+        }[quotation_source]
 
         output_path = os.path.join(tmp_dir, 'temp_output.xlsx')
 
         result, total_boxes = generate_picking_output_multi(invoice_paths, system_path, output_path,
                                                              history_file=history_path,
                                                              quotation_file=quotation_path,
-                                                             weekly_quotation_file=weekly_path)
+                                                             weekly_quotation_file=weekly_path,
+                                                             price_mode=price_mode,
+                                                             export_template_file=export_template_path)
 
         # 重命名为带日期+箱数的文件名
         from datetime import date

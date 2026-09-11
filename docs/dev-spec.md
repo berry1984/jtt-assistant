@@ -283,8 +283,11 @@ def parse_system_export(filepath) -> dict
 def find_history_match(records, name, weight, length, width, height) -> dict|None
     """匹配箱规历史（6种长宽高排列组合 + 重量±0.5）"""
 
+def parse_export_quotation_template(filepath) -> dict
+    """导出报价表模版 → {运单号: {service, warehouse, e_price, f_price, supplier_ch}}"""
+
 def generate_picking_output(invoice_file, system_file, output_path, ...) -> int
-    """返回总箱数"""
+    """返回总箱数（price_mode=export_template 时按 SO号 直取模版价）"""
 
 def generate_picking_output_multi(invoice_files, system_file, output_path, ...) -> (str, int)
     """支持多份发票合并输出"""
@@ -372,7 +375,7 @@ def _gen_telex(shipment: dict, out_dir: str, ...) -> str
 | `/invoice` | GET | 发票转换页面 | — |
 | `/invoice_convert` | POST | 发票转换 | invoice_file, target |
 | `/picking` | GET | 拣货数据页面 | — |
-| `/picking_export` | POST | 拣货数据导出 | picking_invoice(multi), picking_system, picking_history(可选), picking_quotation(可选) |
+| `/picking_export` | POST | 拣货数据导出 | picking_invoice(multi), picking_system, picking_history(可选), picking_quotation(必传), quotation_source(quotation/weekly/export_template) |
 | `/insurance` | GET | 投保拆分页面 | — |
 | `/insurance_split` | POST | 投保拆分 | insurance_file |
 | `/bl_docs` | GET | 提单保函页面 | — |
