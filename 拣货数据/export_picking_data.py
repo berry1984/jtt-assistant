@@ -891,8 +891,36 @@ def _style_data_cell(cell):
             cell.alignment = ALIGN_WRAP
         else:
             cell.alignment = ALIGN_LEFT
+
+
+def _sort_output_rows(output_rows):
+    """按系统SO号升序稳定排序；空 SO 行跟随它上方那一票货，不沉到表尾。
+
+    为什么要「跟组走」而不是沉底：下游 gen_bill.py::_parse_reference 解析本文件的
+    口径是「空 SO 单元格不刷新状态 → 整行并入当前组」（且首行即空 SO 的整行被丢弃）。
+    所以空 SO 行在语义上本来就属于它上面那一票货。沉到表尾会让它们认领最后一票的
+    SO，并连带继承该组的渠道/国家/仓库/下单时间，账单上凭空多出带错渠道的行。
+
+    实现：先按原始顺序做一次 carry-forward（空 SO 继承上一个非空 SO）当作排序键，
+    再稳定排序。空 SO 行因此落在其所属组之后；文件开头就是空 SO 的行没有可继承的组，
+    键为空串，天然留在最前（与改动前一致）。
+    """
+    keys = []
+    last_so = ''
+    for row in output_rows:
+        so = str(row.get('so_no') or '').strip()
+        if so:
+            last_so = so
+        keys.append(last_so)
+    # 按下标稳定排序：同键保持原始相对顺序，且避免同键时比较 dict 报 TypeError
+    order = sorted(range(len(output_rows)), key=keys.__getitem__)
+    return [output_rows[i] for i in order]
+
+
 def _write_output_to_template(output_rows, template_file, output_path):
     """将输出行数据写入模板并保存（A 列「下单时间」插在系统SO号前）"""
+    # 写模板前统一排序（单发票/多发票两个入口都走这里）
+    output_rows = _sort_output_rows(output_rows)
     wb = openpyxl.load_workbook(template_file)
     ws = wb.active
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
