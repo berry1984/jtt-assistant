@@ -34,6 +34,15 @@ import sys
 
 import weekly_quotation as wq
 
+# 线上（Railway）容器里 stdout 是块缓冲，下面的匹配诊断 print 会被整段吞掉——
+# 日志里只剩 werkzeug 访问日志，「报价来源走错分支」这种关键信息完全看不到
+# （Railway 面板的启动命令覆盖了 Procfile，PYTHONUNBUFFERED 传不进去）。
+# 这里自己改成行缓冲，确保每条诊断实时进日志。
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 # ── 配置 ──
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(DATA_DIR, "箱规历史数据库.xlsx")
