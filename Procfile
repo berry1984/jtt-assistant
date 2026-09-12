@@ -1,1 +1,1 @@
-web: cd TR账单自动生成 && python app.py
+web: cd TR账单自动生成 && PYTHONUNBUFFERED=1 python app.py

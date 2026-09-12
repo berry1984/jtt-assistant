@@ -24,6 +24,12 @@ Web: `POST /picking_export` with `picking_invoice[]`, `picking_system`, `picking
    - `export_template` → SO号=运单号 → 导出报价表模版 → 服务/仓库/应收/应付/供应商服务
      （SO取不到时按收件人/仓点+渠道兜底，并回填 B 列 SO号；同键多价或
        运单号已被占用的则拒绝兜底）
+   
+   **报价来源以文件为准，不信下拉框**：`detect_quotation_file_type()` 嗅到
+   「运单号」+「应收/成本运费单价」表头即强制走 `export_template`。选「报价单」
+   （默认项）却传了模版时，模版会被当报价单解析——E 列碰巧对、F/G/H 全空、
+   仓库代码为空的行丢失，SO号/兜底逻辑完全不走，症状酷似「差一点没匹配上」。
+   反向：选 export_template 却传非模版 → 告警 + 整表标红。
 4. 无匹配 → V/W/X/Y 留空标红；报价模版未覆盖 → C/F/G/H 留空、A–H 标红
 
 ## Defaults

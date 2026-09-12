@@ -202,6 +202,39 @@ def clean_template_warehouse(code):
     return head if tail.strip().lower().startswith('amazon') else s
 
 
+def detect_quotation_file_type(filepath):
+    """按表头嗅探报价文件类型，命中「导出报价表模版」返回 'export_template'，否则 None。
+
+    模版有一组独一无二的特征列：**运单号 + 应收运费单价/成本运费单价**。报价单与
+    每周报价表都是按「仓库」或「渠道+仓点」成行的，绝不会同时出现「运单号」列和
+    「成本运费单价」列，所以这个组合命中即可判定。
+
+    为什么要嗅探：下拉框选「报价单」（默认项）却上传了模版时，模版会被 `parse_quotation`
+    当报价单解析——它的「应收运费单价」恰好被识别成应收单价，于是 E 列**碰巧是对的**，
+    而「成本运费单价/供应商服务」取不到（F/G/H 全空），仓库代码为空的行（如海外仓的
+    PENG-P134）直接 `continue` 丢失，SO号 直取与收件人兜底逻辑一行都不走。
+    结果半对半不对，非常容易被当成「差一点点没匹配上」，实则走错了分支。
+    """
+    if not filepath or not os.path.exists(filepath):
+        return None
+    try:
+        wb = openpyxl.load_workbook(filepath, data_only=True, read_only=True)
+    except Exception:
+        return None
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            if not row:
+                continue
+            heads = {str(v or '').strip() for v in row}
+            if '运单号' in heads and ('成本运费单价' in heads or '应收运费单价' in heads):
+                return 'export_template'
+    finally:
+        wb.close()
+    return None
+
+
 def parse_export_quotation_template(filepath):
     """解析「导出报价表模版」，返回 {运单号: {service, warehouse, e_price,
     f_price, supplier_ch}}。
@@ -698,6 +731,22 @@ def generate_picking_output(invoice_file, system_file, output_path,
     if quotation_file is None:
         quotation_file = QUOTATION_FILE
 
+    # ── 报价文件类型以文件本身为准（不信下拉框）──
+    # 选「报价单」（默认项）却传了导出报价表模版时，模版会被 parse_quotation 当报价单
+    # 解析：E 列碰巧取到「应收运费单价」、F/G/H 全空、仓库代码为空的行（海外仓）丢失，
+    # 且 SO号 直取与收件人兜底一行都不走 —— 半对半不对，最容易被误判成「没匹配上」。
+    _sniffed = detect_quotation_file_type(quotation_file)
+    if price_mode != 'export_template' and _sniffed == 'export_template':
+        print("  ℹ️  报价文件识别为「导出报价表模版」，已自动切换为按 SO号 直取"
+              "（下拉框选的是报价单/每周报价表）")
+        export_template_file = quotation_file
+        quotation_file = None   # 别再把它当报价单解析，避免 11 条垃圾仓库价渗进 E/C 列
+        price_mode = 'export_template'
+    elif price_mode == 'export_template' \
+            and detect_quotation_file_type(export_template_file) != 'export_template':
+        print("  ⚠️  选了「导出报价表模版」，但上传的文件没有「运单号」表头，"
+              "不是导出报价表模版 —— 本次将整表标红，请确认上传的文件")
+
     # ── 解析输入 ──
     data_rows, service, warehouse = parse_invoice(invoice_file)
     prefix_to_so, so_order_times = parse_system_export(system_file)
@@ -1015,6 +1064,22 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
         template_file = TEMPLATE_FILE
     if quotation_file is None:
         quotation_file = QUOTATION_FILE
+
+    # ── 报价文件类型以文件本身为准（不信下拉框）──
+    # 选「报价单」（默认项）却传了导出报价表模版时，模版会被 parse_quotation 当报价单
+    # 解析：E 列碰巧取到「应收运费单价」、F/G/H 全空、仓库代码为空的行（海外仓）丢失，
+    # 且 SO号 直取与收件人兜底一行都不走 —— 半对半不对，最容易被误判成「没匹配上」。
+    _sniffed = detect_quotation_file_type(quotation_file)
+    if price_mode != 'export_template' and _sniffed == 'export_template':
+        print("  ℹ️  报价文件识别为「导出报价表模版」，已自动切换为按 SO号 直取"
+              "（下拉框选的是报价单/每周报价表）")
+        export_template_file = quotation_file
+        quotation_file = None   # 别再把它当报价单解析，避免 11 条垃圾仓库价渗进 E/C 列
+        price_mode = 'export_template'
+    elif price_mode == 'export_template' \
+            and detect_quotation_file_type(export_template_file) != 'export_template':
+        print("  ⚠️  选了「导出报价表模版」，但上传的文件没有「运单号」表头，"
+              "不是导出报价表模版 —— 本次将整表标红，请确认上传的文件")
 
     # ── 解析多份发票 ──
     data_rows, service, warehouse = parse_invoice_merge(invoice_files)
