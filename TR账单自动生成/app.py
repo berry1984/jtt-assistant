@@ -29,7 +29,7 @@ INVOICE_DIR = os.path.join(PROJECT_DIR, '发票转换')
 sys.path.insert(0, THIS_DIR)
 sys.path.insert(0, INVOICE_DIR)
 
-from gen_bill import load_data, build_rows, sort_rows, generate_bill, parse_order_date
+from gen_bill import load_data, build_rows, generate_bill, parse_order_date
 from convert_invoice import (TRInvoice, convert_to_tiantu, convert_to_hangle,
                              convert_to_meiqi, _match_waybill)
 
@@ -176,13 +176,13 @@ def generate():
         ref_path = os.path.join(tmp_dir, 'ref.xlsx')
         ref_file.save(ref_path)
 
-        ref_rows, warehouse_prices, price_rows_raw, declaration_groups = load_data(ref_path)
-        rows = build_rows(ref_rows, warehouse_prices)
-        rows = sort_rows(rows, declaration_groups=declaration_groups)
+        ref_rows, price_rows_raw, declaration_groups = load_data(ref_path)
+        # 严格按参考值表从上到下，一一对应，不重排
+        rows = build_rows(ref_rows)
         date_serials = []
-        for so, ref_list in ref_rows.items():
-            # 发货日期 = 参考值「下单时间」列（A列，系统导出抓取）
-            d = parse_order_date(ref_list[0].get('order_time'))
+        for ref in ref_rows:
+            # 发货日期 = 该行所属组的「下单时间」列（A列，系统导出抓取）
+            d = parse_order_date(ref.get('order_time'))
             if d:
                 date_serials.append((d - datetime(1899, 12, 30)).days)
 
