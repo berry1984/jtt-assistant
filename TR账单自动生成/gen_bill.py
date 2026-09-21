@@ -15,6 +15,7 @@
   - J列(计费重) = 参考值「计费重」列数值；该列是公式且无缓存值时按模版公式复刻
     ROUND(MAX(参考实重×箱数, 参考材积重×箱数))
   - 单价(K列) = 参考值「应收单价」列原值；为空即留空，不回退仓库/前缀匹配
+  - 备注(AB) = `VAT:{VAT号}`，VAT号 按 (运单号=系统SO号, FBA ID) 匹配参考值「VAT号」列；无则留空
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - sheet1 B2 = 第2个sheet合计行的 Q+R+U+W+V+X+Y（国际运费1+国际运费2+清关费+附加费+税金+其他费用+退税损失）
   - 合计行 = SUM(F/J/O/P/Q/R/S/T/U/V/W/X/Y/AA) 逐列求和
@@ -158,7 +159,7 @@ def _parse_reference(ref_path):
     返回:
       ref_rows: [{so, order_time, fba, wh, channel, country, supplier_ch, e_price,
                   f_price, boxes, weight, length, width, height,
-                  ref_w, ref_l, ref_wid, ref_h, charge_w}, ...]
+                  ref_w, ref_l, ref_wid, ref_h, charge_w, vat}, ...]
                 **严格保持表内从上到下的行序**，每行携带自己所属组的渠道/仓库/日期，
                 供 build_rows 做一一对应映射。
       price_rows_raw: [(客户渠道, 仓库代码, 应收单价)]（按渠道+仓点+单价去重，供报价表A；
@@ -197,6 +198,7 @@ def _parse_reference(ref_path):
     wid_c     = _find_col(headers_by_col, ['宽'], _excl)
     hei_c     = _find_col(headers_by_col, ['高'], _excl)
     charge_c  = _find_col(headers_by_col, ['计费重'])
+    vat_c     = _find_col(headers_by_col, ['VAT号'])
 
     if so_c is None or e_c is None or fba_c is None:
         raise ValueError('参考值模版缺少必需列（系统SO号 / 应收单价 / FBA ID）')
@@ -294,6 +296,8 @@ def _parse_reference(ref_path):
             'ref_wid': r[refwid_c - 1] if refwid_c else None,
             'ref_h': r[refh_c - 1] if refh_c else None,
             'charge_w': r[charge_c - 1] if charge_c else None,
+            # VAT号（拣货模块 2026-09-21 起输出；旧参考值文件没这列则留空）
+            'vat': _s(r[vat_c - 1]) if vat_c else '',
         })
     return ref_rows, price_rows_raw
 
@@ -368,9 +372,11 @@ def build_rows(ref_rows):
       G/H/I 长宽高 ← 参考长/参考宽/参考高（参考尺寸）
       J 计费重 ← 计费重列（公式无缓存值时复刻公式）
       K 应收单价 ← 应收单价列原值（为空即留空）
+      AB 备注 ← 按 (系统SO号, FBA ID) 匹配参考值「VAT号」列 → 写成 `VAT:{号}`；无则留空
 
     计费重为 0 的行（无实际货量）会被丢弃——报关费按行收取，留 0 行会凭空多算报关费；
-    丢弃的行号会打印出来，便于与参考值表核对行数。
+    丢弃的行号会打印出来，便于与参考值表核对行数。**注意**：VAT 查找表建在丢弃之前，
+    所以被丢弃行上的 VAT号 仍可被同一 (SO, FBA) 的其它行取到。
     """
     def to_num(v, default=0):
         if v is None:
@@ -381,6 +387,16 @@ def build_rows(ref_rows):
             return float(str(v).strip())
         except (ValueError, TypeError):
             return float(default)
+
+    # 备注(VAT)查找表：按「运单号(系统SO号) + FBA ID」抓参考值「VAT号」列。
+    # 先建表再丢行：同一 (SO, FBA) 有多行时取第一个非空 VAT号。
+    # 键做空白归一化（SO/FBA 里带空格或换行不影响匹配）。
+    vat_map = {}
+    for ref in ref_rows:
+        _vk = (_text_key(ref.get('so')), _text_key(ref.get('fba')))
+        _vv = _norm_text(ref.get('vat'))
+        if _vv and not vat_map.get(_vk):
+            vat_map[_vk] = _vv
 
     rows = []
     dropped = []
@@ -406,6 +422,9 @@ def build_rows(ref_rows):
             'weight_raw': ref_weight,
             # 应收单价原样透传：'' 表示参考值 F 列为空（账单 K 列留空，不回退匹配）
             'unit_price': '' if e_price in (None, '') else e_price,
+            # 备注 = VAT:{VAT号}；参考值无该列/该行为空 → 留空
+            'vat': vat_map.get((_text_key(ref.get('so')), _text_key(ref.get('fba'))))
+                   or _norm_text(ref.get('vat')),
         })
 
     if dropped:
@@ -556,8 +575,14 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         ws[f'AA{row_num}'].border = thin_border
         ws[f'AA{row_num}'].number_format = '#,##0.00'
         
-        # AB blank
-        ws[f'AB{row_num}'].border = thin_border
+        # AB 备注 = VAT:{VAT号}（按 运单号+FBA ID 从参考值「VAT号」列匹配；为空则留空）
+        _vat = _norm_text(r.get('vat'))
+        ab = ws[f'AB{row_num}']
+        ab.border = thin_border
+        if _vat:
+            ab.value = f'VAT:{_vat}'
+            ab.font = data_font
+            ab.alignment = center
 
     # Apply template column fills to all data rows
     for rn in range(4, 4 + n):
@@ -786,6 +811,9 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         _ws.sheet_view.view = 'normal'
 
     wb.save(output_path)
+
+    _vat_n = sum(1 for r in rows if _norm_text(r.get('vat')))
+    print(f"  🏷️  备注(VAT): {_vat_n}/{len(rows)} 行填了 VAT号（按 运单号+FBA ID 匹配参考值 VAT号 列）")
     return True
 
 
