@@ -16,7 +16,10 @@
     ROUND(MAX(参考实重×箱数, 参考材积重×箱数))
   - 单价(K列) = 参考值「应收单价」列原值；为空即留空，不回退仓库/前缀匹配
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
-  - 报价表A：按 (客户渠道, 仓库代码, 应收单价) 去重陈列——同渠道+同仓点不同单价各列一条
+  - sheet1 B2 = 第2个sheet合计行的 Q+R+U+W+V+X+Y（服务费+报关费+税费+其他费用+税金+退税损失）
+  - 合计行 = SUM(F/J/O/P/Q/R/S/T/U/V/W/X/Y/AA) 逐列求和
+  - 报价表A：按 (月份, 周, 客户渠道, 仓库代码, 应收单价) 五元组去重陈列——同渠道+同仓点不同单价各列一条；
+    五元组完全相同的重复行只保留唯一一行（单价按数值归一化比较：13 / '13 ' / 13.0 视为同一条）
 """
 
 import sys, re, os, shutil
@@ -94,6 +97,29 @@ def _find_col(headers, needles, exclude=()):
     return None
 
 
+def _norm_text(v):
+    """单元格文本归一化：None → ''，其余去首尾空白。"""
+    return '' if v is None else str(v).strip()
+
+
+def _price_key(v):
+    """单价归一化键：13、'13 '、13.0 视为同一条，避免「看上去一样」的重复行。
+
+    非数值（文本单价如 'A-12'）按去掉全部空白后的字符串比较。
+    """
+    if v is None or v == '':
+        return ''
+    try:
+        return round(float(str(v).strip()), 4)
+    except (TypeError, ValueError):
+        return re.sub(r'\s+', '', str(v))
+
+
+def _text_key(v):
+    """文本归一化键（渠道/仓库）：去掉首尾与中间的空白，Excel 粘贴里的不可见空格不影响比较。"""
+    return re.sub(r'\s+', '', _norm_text(v))
+
+
 def _merged_fill(ws, col):
     """收集工作表 col 列上的合并单元格，把区间左上角的值铺到区间内每一行。
 
@@ -120,10 +146,12 @@ def _merged_fill(ws, col):
 def _parse_reference(ref_path):
     """解析「内部拣货数据参考值」模版（拣货数据模块生成）。
 
-    列布局（行1为表头，A 为新增「下单时间」列）：
-      A=下单时间  B=系统SO号  C=客户渠道  D=国家  E=仓库代码  F=应收单价  G=应付单价
-      K=FBA ID  N=总箱数  O=实重  P=长  Q=宽  R=高
-      W=参考实重  X=参考长  Y=参考宽  Z=参考高  H=供应商渠道  AE=计费重
+    列布局（行1为表头；拣货模块 2026-09-21 起在「客户渠道」后插入 D=VAT号，以下为该新布局）：
+      A=下单时间  B=系统SO号  C=客户渠道  D=VAT号  E=国家  F=仓库代码  G=应收单价  H=应付单价
+      I=供应商渠道  L=FBA ID  O=总箱数(CTN)  P=实重  Q=长  R=宽  S=高
+      X=参考实重  Y=参考长  Z=参考宽  AA=参考高  AF=计费重
+    注：本函数按**表头名**匹配（`_norm_header`/`_find_col`），不依赖列号，
+    所以参考值表增删列（如 VAT号）不影响解析；上面的字母仅作阅读参考。
     下单时间/SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充；
     这几列若为**合并单元格**，按合并区间取值——区间内每一行取同一个值（`_merged_fill`）。
 
@@ -133,7 +161,8 @@ def _parse_reference(ref_path):
                   ref_w, ref_l, ref_wid, ref_h, charge_w}, ...]
                 **严格保持表内从上到下的行序**，每行携带自己所属组的渠道/仓库/日期，
                 供 build_rows 做一一对应映射。
-      price_rows_raw: [(客户渠道, 仓库代码, 应收单价)]（按三元组去重，供报价表A）
+      price_rows_raw: [(客户渠道, 仓库代码, 应收单价)]（按渠道+仓点+单价去重，供报价表A；
+                      月份/周度由月度导出，最终五元组去重在写入时再做一次）
     """
     wb = load_workbook(ref_path, data_only=True)
     ws = wb.active
@@ -237,9 +266,11 @@ def _parse_reference(ref_path):
         if fba in (None, ''):
             continue
         e_price = r[e_c - 1]
-        # 报价表A：同渠道+同仓点若单价不同要各列一条，故按 (渠道, 仓库, 单价) 三元组去重
+        # 报价表A：同渠道+同仓点若单价不同要各列一条，故按 (渠道, 仓库, 单价) 三元组去重；
+        # 单价先归一化（13 / '13 ' / 13.0 是同一条），真正写表时还会按
+        # (月份, 周, 渠道, 仓库, 单价) 再兜一次（见 generate_bill）
         if cur_wh:
-            key = (cur_ch, cur_wh, e_price)
+            key = (cur_ch, cur_wh, _price_key(e_price))
             if key not in seen_prices:
                 seen_prices.add(key)
                 price_rows_raw.append((cur_ch, cur_wh, e_price))
@@ -565,7 +596,9 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     ws[f'B{sr}'].font = bold_font
     ws[f'B{sr}'].alignment = center
 
-    sum_cols = ['F', 'J', 'O', 'P', 'Q', 'R', 'S', 'T', 'W', 'AA']
+    # U=清关费 V=税金 W=附加费 X=其他费用 Y=退税损失：模版「合计」行原本就是 U~Y 全汇总，
+    # 开票金额表的 B2 也要把这四项一起算进「国际货物运输代理服务」，故一并补上 SUM
+    sum_cols = ['F', 'J', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'AA']
     for cl in sum_cols:
         ws[f'{cl}{sr}'].value = f'=SUM({cl}4:{cl}{sr-2})'  # data up to last data row (sr-2), blank sr-1 excluded
         ws[f'{cl}{sr}'].font = bold_font
@@ -618,7 +651,12 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     ref_row = sr  # subtotal row
     
     inv_data = [
-        ('国际货物运输代理服务', f"='{sheet_name}'!Q{ref_row}+'{sheet_name}'!R{ref_row}+'{sheet_name}'!U{ref_row}+'{sheet_name}'!W{ref_row}", '免税', 0),
+        # 国际货物运输代理服务 = 国际运费1+国际运费2+清关费+附加费 + 税金(V)+其他费用(X)+退税损失(Y)
+        # 后三项（明细表合计行 V/X/Y）此前没进 B2，用户 2026-09-21 要求补上
+        ('国际货物运输代理服务',
+         f"='{sheet_name}'!Q{ref_row}+'{sheet_name}'!R{ref_row}+'{sheet_name}'!U{ref_row}"
+         f"+'{sheet_name}'!W{ref_row}+'{sheet_name}'!V{ref_row}+'{sheet_name}'!X{ref_row}"
+         f"+'{sheet_name}'!Y{ref_row}", '免税', 0),
         ('代理入仓费', f"='{sheet_name}'!O{ref_row}", 0.06, f"='{sheet_name}'!P{ref_row}"),
         ('经纪代理服务-报关费', f"='{sheet_name}'!S{ref_row}", 0.06, f"='{sheet_name}'!T{ref_row}"),
     ]
@@ -697,8 +735,18 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
         week_str = week_map.get(week_num, f'第{week_num}周')
 
     # Write price data rows
-    # 按 (客户渠道, 仓库代码, 应收单价) 陈列：同渠道+同仓点若单价不同，各列一条（见 _parse_reference）
+    # 按 (客户渠道, 仓库代码, 应收单价) 陈列：同渠道+同仓点若单价不同，各列一条（见 _parse_reference）；
+    # 写表前再按 (月份, 周, 渠道, 仓库, 单价) 去重 —— 五项完全一样只保留第一条（用户 2026-09-21 规则）
     quote_rows = [v for v in (price_rows_raw or []) if v and v[1]]
+    seen_quotes = set()
+    deduped = []
+    for vals in quote_rows:
+        key = (month, week_str, _text_key(vals[0]), _text_key(vals[1]), _price_key(vals[2]))
+        if key in seen_quotes:
+            continue
+        seen_quotes.add(key)
+        deduped.append(vals)
+    quote_rows = deduped
     for i, vals in enumerate(quote_rows):
         r = 4 + i
         ch, wh, price = vals[0], vals[1], vals[2]

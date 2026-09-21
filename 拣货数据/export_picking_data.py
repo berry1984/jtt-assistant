@@ -11,12 +11,17 @@
 
 输出：
   内部拣货数据参考值 (.xlsx) — 按 SO 号归组，匹配历史箱规
+  最终列序：A=下单时间 B=系统SO号 C=客户渠道 **D=VAT号（2026-09-21 新增）**
+  E=国家 F=仓库代码 …（下方匹配逻辑里写的列号是「写入期列号」，即 VAT号 插入前，
+  输出文件里 D 及以后整体右移一位：E=国家 F=仓库代码、箱规 W/X/Y/Z、标红 A–I）
 
 匹配逻辑：
   - 发票每行货箱编号 → 前12位 = FBA ID → 匹配系统导出的扩展箱号 → 取运单号(SO号)
   - 客户渠道：报价方式=导出报价表模版时取模版「服务」；
     否则回退报价表 JTT渠道 / 发票「服务」列
   - 仓库代码：取发票「收件人姓名」（地址信息）；导出报价表模版命中时以模版「仓库代码」为准
+  - VAT号：每张发票单独识别——表头「VAT号*」右侧（E10 的右邻格 F10，或其它发票的相邻格）
+    取 DE 开头的号；识别不到/未填写则留空，绝不回退其它发票的值
   - 箱规历史：品名+重量/尺寸匹配 → 取标准箱规(V/W/X/Y)
   - 无历史匹配 → V/W/X/Y 留空，标红
   - 报价模版未覆盖的 SO → C/F/G/H 留空，该组 A–H 标红
@@ -27,7 +32,7 @@
 """
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side, Color
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
 import os
 import re
 import sys
@@ -93,6 +98,53 @@ def country_from_warehouse(warehouse):
 
 # ── 解析函数 ──
 
+def extract_vat(ws):
+    """取发票头部「VAT号」后面的税号（DE 开头），识别不到返回空串。
+
+    标签位置随发票模板不同：天图/TR（赛诺吉发票）在 E10「VAT号*」，值在右侧 F10
+    （F10:G10 是合并单元格，值在合并区左上角）；航乐模板在 A7「VAT号*」，值在右侧。
+    故按内容找标签（归一化后等于 VAT号），再取右侧第一个有值的单元格（跳过合并区内部
+    的空单元格），最后从中抽出 DE/GB… 这类「两位字母+数字」的税号。
+
+    规则来源（2026-09-21 用户）：数据来源于每张发票 E10「VAT号」后面 DE 开头的数据；
+    未填写 / 识别不到 → 返回空。
+    """
+    label_row = label_col = None
+    for r in range(1, 26):
+        for c in range(1, 13):
+            txt = str(ws.cell(row=r, column=c).value or '').strip()
+            if not txt:
+                continue
+            if re.sub(r'[\s*：:]+', '', txt).upper() == 'VAT号':
+                label_row, label_col = r, c
+                break
+        if label_row:
+            break
+    if not label_row:
+        return ''
+
+    for offset in (1, 2, 3):
+        col = label_col + offset
+        merged = next((m for m in ws.merged_cells.ranges
+                       if m.min_row <= label_row <= m.max_row
+                       and m.min_col <= col <= m.max_col), None)
+        if merged and merged.min_col != col:
+            continue  # 合并区间内部（值在左上角，上一轮已取过）
+        val = ws.cell(row=label_row, column=col).value
+        if val in (None, ''):
+            continue
+        # 去掉空格/连字符后应当是「两位字母+数字」的税号（DE123456789 / DE 123 456 789）
+        cleaned = re.sub(r'[\s\-–—_]+', '', str(val).strip().upper())
+        if re.fullmatch(r'[A-Z]{2}\d{6,}[A-Z0-9]*', cleaned):
+            return cleaned
+        # 单元格里夹带说明（如「VAT：DE123456789」）时取其中第一个税号样式串
+        m = re.search(r'[A-Z]{2}\d{6,}', cleaned)
+        if m and len(cleaned) <= 25:
+            return m.group(0)
+        return ''  # 有内容但不是税号（如「无」「包税」）→ 视为未填写
+    return ''
+
+
 def parse_invoice(filepath):
     """解析发票文件，返回 (data_rows, service, warehouse)"""
     wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -118,6 +170,9 @@ def parse_invoice(filepath):
             service = str(b or '').strip()
         elif a == '收件人姓名':
             warehouse = str(b or '').strip()
+
+    # VAT号（发票头部「VAT号」右侧的 DE 开头税号，识别不到为空）
+    vat = extract_vat(ws)
 
     # ── 查找数据表头行 ──
     data_start = None
@@ -147,6 +202,7 @@ def parse_invoice(filepath):
             'cn_name': ws.cell(row=r, column=7).value,     # G
             'warehouse': warehouse,  # 每行携带自己的仓库代码
             'service': service,      # 每行携带自己的物流渠道
+            'vat': vat,              # 每行携带本张发票的 VAT号（多发票时各行可能不同）
         }
         data_rows.append(row)
 
@@ -804,6 +860,7 @@ def generate_picking_output(invoice_file, system_file, output_path,
             'so_no': so_no,
             'order_time': so_order_times.get(so_no, ''),
             'service': row_svc,
+            'vat': row.get('vat', ''),   # 来自本行所属发票的 VAT号
             'country': country_from_warehouse(row_wh),
             'warehouse': row_wh,
             'e_price': q_info.get('e_price', ''),
@@ -861,22 +918,38 @@ ALIGN_CENTER = Alignment(horizontal='center', vertical='center')
 ALIGN_LEFT = Alignment(horizontal='left', vertical='center')
 ALIGN_WRAP = Alignment(vertical='center', wrap_text=True)
 
-# 需要居中对齐的数值/公式列（A 列插入「下单时间」后整体右移 1）
+# 需要居中对齐的数值/公式列 —— 用的是「写单元格时」的列号（A 列插了「下单时间」、
+# 尚未插 VAT号）：VAT号 列是插列后单独写、单独设左对齐的，不在这里
 CENTER_COLS = {4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
-# 需要左对齐的文本列
+# 需要左对齐的文本列（同上，写单元格时的列号）
 LEFT_COLS = {1, 2, 3, 9, 10, 11, 12}
 
-# 列宽（匹配标准版，A 列插入「下单时间」后整体右移 1）
+# 列宽 —— 按**最终列序**设置（A 下单时间 / B 系统SO号 / C 客户渠道 / D VAT号(新) 之后
+# 整体右移一列：原 D 国家…AF 成本KG → E…AG）。D 为 2026-09-21 新增的 VAT号。
 COL_WIDTHS = {
-    'A': 21.0, 'B': 18.54, 'C': 21.46, 'D': 10.56,
-    'E': 9.54, 'F': 8.43, 'G': 8.43, 'H': 8.16,
-    'I': 27.44, 'J': 21.78, 'K': 9.54, 'L': 17.61,
-    'M': 19.0, 'N': 12.16, 'O': 7.07, 'P': 8.39,
-    'Q': 8.39, 'R': 8.39, 'S': 7.61, 'T': 9.0,
-    'U': 6.33, 'V': 6.11, 'W': 10.89, 'X': 12.46,
-    'Y': 8.43, 'Z': 7.61, 'AA': 5.93, 'AB': 8.07,
-    'AC': 9.54, 'AD': 8.07, 'AE': 9.0, 'AF': 9.54,
+    'A': 21.0, 'B': 18.54, 'C': 21.46, 'D': 16.0,
+    'E': 10.56, 'F': 9.54, 'G': 8.43, 'H': 8.43,
+    'I': 8.16, 'J': 27.44, 'K': 21.78, 'L': 9.54,
+    'M': 17.61, 'N': 19.0, 'O': 12.16, 'P': 7.07,
+    'Q': 8.39, 'R': 8.39, 'S': 8.39, 'T': 7.61,
+    'U': 9.0, 'V': 6.33, 'W': 6.11, 'X': 10.89,
+    'Y': 12.46, 'Z': 8.43, 'AA': 7.61, 'AB': 5.93,
+    'AC': 8.07, 'AD': 9.54, 'AE': 8.07, 'AF': 9.0,
+    'AG': 9.54,
 }
+
+
+def _shift_formula_cols(formula, delta):
+    """把公式里的 A1 式列引用整体右移 delta 列（openpyxl 的 insert_cols 不翻译公式）。
+
+    用于「插入 VAT号 列」后重写已写好的公式：
+      '=O2+P2+Q2-Y2-X2-W2' → delta=1 → '=P2+Q2+R2-Z2-Y2-X2'
+    行号、函数名（ROUND/MAX/SUM）不受影响——列引用要求字母后紧跟（可选的 $ 和）数字。
+    """
+    def repl(m):
+        idx = column_index_from_string(m.group(2)) + delta
+        return f'{m.group(1)}{get_column_letter(idx)}{m.group(3)}{m.group(4)}'
+    return re.sub(r'(?<![A-Z0-9])(\$?)([A-Z]{1,2})(\$?)(\d+)', repl, formula)
 
 
 def _style_data_cell(cell):
@@ -918,12 +991,27 @@ def _sort_output_rows(output_rows):
 
 
 def _write_output_to_template(output_rows, template_file, output_path):
-    """将输出行数据写入模板并保存（A 列「下单时间」插在系统SO号前）"""
+    """将输出行数据写入模板并保存（A 列「下单时间」插在系统SO号前）。
+
+    ⚠️ 两套列号，别混用：
+      ① **写入期列号**：本函数前半段（写到 VAT号 插入之前）的硬编码 column 值——
+         A=下单时间 B=系统SO号 C=客户渠道 D=国家 E=仓库代码 F/G/H=应收单价/应付单价/供应商渠道
+         K=FBA ID L=中文品名 N=总箱数 O=实重 P/Q/R=长/宽/高 S=材积重 T/U/V/W=差异与箱规 X/Y/Z=参考长宽高
+      ② **输出期列号**（D 及以后 = 写入期 +1）：本函数末尾 `ws.insert_cols(4)` 插入 D=VAT号 后的最终布局——
+         A=下单时间 B=系统SO号 C=客户渠道 D=VAT号 E=国家 F=仓库代码 G/H/I=应收单价/应付单价/供应商渠道
+         L=FBA ID M=中文品名 O=总箱数 P=实重 Q/R/S=长/宽/高 T=材积重
+         X=参考实重 Y/Z/AA=参考长/宽/高 AF=计费重
+         `COL_WIDTHS`/`CENTER_COLS`/`LEFT_COLS` 等常量按输出期列号书写；写入期生成的公式
+         （材积重/差异/参考值/计费重）用 `_shift_formula_cols(f, 1)` 整体右移一位后回填。
+      插入列用 openpyxl 的 `insert_cols`：它只搬移值与样式，**不翻译公式、不搬合并区域、不重映射列宽**，
+      所以三者都要手工处理（合并区已在开头 unmerge，列宽在插入后按 idx>=4 → idx+1 重排）。
+    """
     # 写模板前统一排序（单发票/多发票两个入口都走这里）
     output_rows = _sort_output_rows(output_rows)
     wb = openpyxl.load_workbook(template_file)
     ws = wb.active
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    red_rows = []   # 报价模版未覆盖（整行标红）的行号，插 VAT号 列后要在新列补红
 
     # 先取消数据区合并（插入列不会移动合并区域，需先清掉再插列）
     merges_to_remove = [str(m) for m in list(ws.merged_cells.ranges) if m.min_row >= 2]
@@ -1020,6 +1108,7 @@ def _write_output_to_template(output_rows, template_file, output_path):
             if unmatched:
                 for col in range(1, 9):
                     ws.cell(row=r, column=col).fill = red_fill
+                red_rows.append(r)
             # 无历史匹配 → 标红
             if all(v is None for v in [w_val, x_val, y_val, z_val]):
                 for col in [23, 24, 25, 26]:
@@ -1061,6 +1150,53 @@ def _write_output_to_template(output_rows, template_file, output_path):
             ws.merge_cells(start_row=start_row, start_column=1, end_row=current_row - 1, end_column=1)
             ws.merge_cells(start_row=start_row, start_column=2, end_row=current_row - 1, end_column=2)
             ws.merge_cells(start_row=start_row, start_column=3, end_row=current_row - 1, end_column=3)
+
+    # ── 在「客户渠道」后插入「VAT号」列（用户 2026-09-21 规则）──────────────
+    # 目标列序：A 下单时间 / B 系统SO号 / C 客户渠道 / D VAT号 / E 国家 / F 仓库代码 …
+    # openpyxl 的 insert_cols 只搬移单元格的值与样式：公式不翻译、列宽不搬、合并区域不动，
+    # 所以这里：①先把数据区公式列的公式原样取出 ②插入 D 列 ③按「列字母整体右移一位」
+    # 重写公式 ④逐行填 VAT号（识别不到即空）⑤未匹配标红的行补上新列。
+    # 合并区域只用在 A~C 列（组头），插到 D 列不影响；列宽在后面按新列序统一重设。
+    last_row = current_row - 1
+    # 列宽是按列字母存的，insert_cols 同样不搬：先把模板自带列宽快照，插列后整体右移一位重放
+    # （模板 AG 之后的额外列如「成本KG/过机图」也一起挪），本模块管理的列随后由 COL_WIDTHS 覆盖
+    shifted_widths = {}
+    for letter in list(ws.column_dimensions):
+        idx = column_index_from_string(letter)
+        if idx < 4:
+            continue
+        width = ws.column_dimensions[letter].width
+        if width:
+            shifted_widths[get_column_letter(idx + 1)] = width
+        del ws.column_dimensions[letter]   # 旧字母的键清掉，免得插列后残留错位
+
+    formula_cells = []
+    for old_col in (19, 20, 21, 27, 28, 29, 30, 31):   # 插列前：材积重/单箱材积重差异/
+        for r in range(2, last_row + 1):               # 周长差异/材积重(参考)/体积/总实重/总材积重/计费重
+            v = ws.cell(row=r, column=old_col).value
+            if isinstance(v, str) and v.startswith('='):
+                formula_cells.append((r, old_col, v))
+
+    ws.insert_cols(4)
+    hdr_vat = ws.cell(row=1, column=4)
+    hdr_vat.value = 'VAT号'
+    hdr_vat._style = ws.cell(row=1, column=3)._style
+
+    for r, old_col, formula in formula_cells:
+        ws.cell(row=r, column=old_col + 1).value = _shift_formula_cols(formula, 1)
+
+    for i, row_data in enumerate(output_rows):
+        cell = ws.cell(row=2 + i, column=4)
+        cell.value = row_data.get('vat', '')
+        cell.font = DATA_FONT
+        cell.border = THIN_BORDER
+        cell.alignment = ALIGN_LEFT
+    for r in red_rows:
+        ws.cell(row=r, column=4).fill = red_fill
+    for letter, width in shifted_widths.items():
+        if letter not in COL_WIDTHS:
+            ws.column_dimensions[letter].width = width
+
     # ── 设置列宽 ──
     for col_letter, width in COL_WIDTHS.items():
         ws.column_dimensions[col_letter].width = width
@@ -1166,6 +1302,7 @@ def generate_picking_output_multi(invoice_files, system_file, output_path,
             'so_no': so_no,
             'order_time': so_order_times.get(so_no, ''),
             'service': row_svc,
+            'vat': row.get('vat', ''),   # 来自本行所属发票的 VAT号
             'country': country_from_warehouse(row_wh),
             'warehouse': row_wh,
             'e_price': q_info.get('e_price', ''),
