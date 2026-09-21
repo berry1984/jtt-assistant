@@ -94,6 +94,29 @@ def _find_col(headers, needles, exclude=()):
     return None
 
 
+def _merged_fill(ws, col):
+    """收集工作表 col 列上的合并单元格，把区间左上角的值铺到区间内每一行。
+
+    规则（2026-09-21 用户确认）：**合并单元格对应的每一行，仓库代码一致**。
+    openpyxl 读合并区域时只有左上角有值、其余行是 None，逐行读会读出空值；若该空值又
+    正好落在 SO 分组首行，就会把上一组的仓库代码清空（账单 E 列空白、报价表A 少一条）。
+    故先按合并区间取值，确认区间内每行一致后，再进入后续字段匹配。
+
+    返回 ({行号: 值}, [(起始行, 结束行, 值), ...])
+    """
+    fill = {}
+    ranges = []
+    if not col:
+        return fill, ranges
+    for mr in ws.merged_cells.ranges:
+        if mr.min_col <= col <= mr.max_col:
+            v = ws.cell(row=mr.min_row, column=mr.min_col).value
+            for rr in range(mr.min_row, mr.max_row + 1):
+                fill[rr] = v
+            ranges.append((mr.min_row, mr.max_row, v))
+    return fill, ranges
+
+
 def _parse_reference(ref_path):
     """解析「内部拣货数据参考值」模版（拣货数据模块生成）。
 
@@ -101,7 +124,8 @@ def _parse_reference(ref_path):
       A=下单时间  B=系统SO号  C=客户渠道  D=国家  E=仓库代码  F=应收单价  G=应付单价
       K=FBA ID  N=总箱数  O=实重  P=长  Q=宽  R=高
       W=参考实重  X=参考长  Y=参考宽  Z=参考高  H=供应商渠道  AE=计费重
-    下单时间/SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充。
+    下单时间/SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充；
+    这几列若为**合并单元格**，按合并区间取值——区间内每一行取同一个值（`_merged_fill`）。
 
     返回:
       ref_rows: [{so, order_time, fba, wh, channel, country, supplier_ch, e_price,
@@ -151,20 +175,64 @@ def _parse_reference(ref_path):
     def _s(v):
         return '' if v is None else str(v).strip()
 
+    # 组头列（下单时间/SO/客户渠道/国家/仓库代码）常按组合并成一格：先按合并区间铺值，
+    # 确认「合并单元格覆盖的每一行取到同一个值」，再做后面的逐行字段匹配。
+    fill_maps = {}
+    merged_seen = []
+    for _label, _c in (('下单时间', order_time_c), ('客户渠道', ch_c),
+                       ('国家', country_c), ('仓库代码', wh_c)):
+        _fm, _ranges = _merged_fill(ws, _c)
+        if _c:
+            fill_maps[_c] = _fm
+        for _r0, _r1, _v in _ranges:
+            merged_seen.append((_label, _r0, _r1, _s(_v)))
+    if merged_seen:
+        print(f'🧩 合并单元格：{len(merged_seen)} 段已按区间取值（区间内每一行一致）')
+        for _label, _r0, _r1, _v in merged_seen:
+            print(f'   · {_label} 第{_r0}-{_r1}行 → {_v or "(空)"}')
+
     ref_rows = []
     price_rows_raw = []
     seen_prices = set()
     cur_so = cur_ch = cur_country = cur_wh = ''
     cur_order_time = None
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        if _s(r[so_c - 1]):
-            cur_so = _s(r[so_c - 1])
-            cur_ch = _s(r[ch_c - 1]) if ch_c else ''
-            cur_country = _s(r[country_c - 1]) if country_c else ''
-            cur_wh = _s(r[wh_c - 1]) if wh_c else ''
-            cur_order_time = r[order_time_c - 1] if order_time_c else None
+    for _idx, r in enumerate(ws.iter_rows(min_row=2, values_only=True)):
+        _row_no = _idx + 2
+
+        def _cell(col):
+            """该行 col 列的取值 → (值, 是否由本行直接给出)。
+            落在合并区间内：取区间左上角的值，区间内每一行一致（本行直接给出）；
+            不在合并区间内：取本行原值，仅分组首行(SO 非空)才作为组头值。"""
+            if not col:
+                return None, False
+            fm = fill_maps.get(col)
+            if fm and _row_no in fm:
+                return fm[_row_no], True
+            return r[col - 1], False
+
+        so_v = _s(r[so_c - 1])
+        if so_v:
+            cur_so = so_v
         if not cur_so:
             continue
+
+        if order_time_c:
+            _v, _direct = _cell(order_time_c)
+            if _direct or so_v:
+                cur_order_time = _v
+        for _c, _key in ((ch_c, 'ch'), (country_c, 'country'), (wh_c, 'wh')):
+            if not _c:
+                continue
+            _v, _direct = _cell(_c)
+            if not (_direct or so_v):
+                continue          # 组内续行：沿用本组已确认的值
+            _sval = _s(_v)
+            if _key == 'ch':
+                cur_ch = _sval
+            elif _key == 'country':
+                cur_country = _sval
+            else:
+                cur_wh = _sval
         fba = r[fba_c - 1]
         if fba in (None, ''):
             continue
