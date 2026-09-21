@@ -736,10 +736,23 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
 
     # ── 报价表A: update with actual price data ──
     ws_quote = wb['报价表A']
-    # Clear old price rows (keep headers R1-R3)
-    for r in range(4, 30):
+    # 样式基线：模板里第 4 行（示例数据行）就是这张表的规范样式——字体/边框/底纹/数字格式
+    # 全部按它复制到每一条报价行；未使用的行用模板第 11 行（空白行）的样式复位。
+    # 原实现只清值、不写样式：模板预置样式的第 4~10 行有细边框+底纹、行高 28.25，
+    # 第 11 行起的新行是裸的（无框线、默认行高、宋体 11）——报价条目超过 7 条时
+    # 表格下半截突然「没框、行高不对」，就是用户 2026-09-21 反馈的「格式没有统一」。
+    _q_style = {c: copy(ws_quote.cell(row=4, column=c)._style) for c in range(1, 9)}
+    _q_blank_style = {c: copy(ws_quote.cell(row=11, column=c)._style) for c in range(1, 9)}
+    _q_h = ws_quote.row_dimensions[4].height or 28.25
+    _q_blank_h = ws_quote.row_dimensions[11].height
+
+    # Clear old price rows (keep headers R1-R3)：值与样式一起复位，避免旧样式残留
+    for r in range(4, 41):
         for c in range(1, 9):
-            ws_quote.cell(row=r, column=c).value = None
+            _qc = ws_quote.cell(row=r, column=c)
+            _qc.value = None
+            _qc._style = copy(_q_blank_style[c])
+        ws_quote.row_dimensions[r].height = _q_blank_h
 
     # Determine week info from date range
     week_str = ''
@@ -775,24 +788,15 @@ def generate_bill(rows, output_path, template_path=None, title_str=None, date_ra
     for i, vals in enumerate(quote_rows):
         r = 4 + i
         ch, wh, price = vals[0], vals[1], vals[2]
-        ws_quote.cell(row=r, column=1, value=month).font = data_font
-        ws_quote.cell(row=r, column=1).alignment = center
-        ws_quote.cell(row=r, column=2, value=week_str).font = data_font
-        ws_quote.cell(row=r, column=2).alignment = center
-        ws_quote.cell(row=r, column=3, value=ch).font = data_font
-        ws_quote.cell(row=r, column=3).alignment = center
-        ws_quote.cell(row=r, column=4, value=wh).font = data_font
-        ws_quote.cell(row=r, column=4).alignment = center
-        ws_quote.cell(row=r, column=5, value=price).font = data_font
-        ws_quote.cell(row=r, column=5).alignment = center
-        ws_quote.cell(row=r, column=5).number_format = '0.0'
-        # Calculated columns as formulas
+        ws_quote.row_dimensions[r].height = _q_h
+        for c_idx, v in ((1, month), (2, week_str), (3, ch), (4, wh), (5, price)):
+            cell = ws_quote.cell(row=r, column=c_idx, value=v)
+            cell._style = copy(_q_style[c_idx])   # 含字体/居中/边框/底纹/数字格式
+        # 计算列（门到港/港到门/港到门 总单价）与模板同款公式
         for c_idx, formula_tmpl in [(6, f'=E{r}*0.07/1.06'), (7, f'=E{r}*0.35'), (8, f'=E{r}*0.58')]:
             cell = ws_quote.cell(row=r, column=c_idx)
             cell.value = formula_tmpl
-            cell.font = data_font
-            cell.alignment = center
-            cell.number_format = '0.0000'
+            cell._style = copy(_q_style[c_idx])
 
     # ── Save ──
     # Apply template column fills to all data rows (after all writes/merges)
