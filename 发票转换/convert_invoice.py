@@ -25,6 +25,7 @@ TR源文件结构：Sheet=Page1, 头部Row 1-16, 数据Row 18+
 import sys
 import os
 import re
+import math
 import shutil
 import argparse
 import zipfile
@@ -642,7 +643,7 @@ def convert_to_tiantu(tr, output_path, image_url_base=None, order_list_path=None
         set_cell('O', r, dr['B'] if dr['B'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
-        # P: 货箱长度(CM) —— 提取规则：45.6→45、45.5→44.5（见 _apply_dim_rule）
+        # P: 货箱长度(CM) —— 提取规则：45.6→45、45.5→44（见 _apply_dim_rule）
         set_cell('P', r, _apply_dim_rule(dr['C']) if dr['C'] is not None else '',
                  font_data, center_align, thin_border, '0.0')
 
@@ -858,13 +859,15 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
         box_count = parse_box_count(dr['A'])
         total_qty = qty * box_count
 
-        # 尺寸 — 应用提取规则（45.6→45、45.5→44.5），材重/CBM 与显示尺寸保持一致
+        # 尺寸 — 应用提取规则（45.6→45、45.5→44），材重/CBM 与显示尺寸保持一致
         length_cm, width_cm, height_cm = _row_dims(dr)
 
         # 材重除数：欧洲 6000，英国 5000
         vol_div = 6000 if region == 'eu' else 5000
-        raw_vol_wt = (length_cm * width_cm * height_cm / vol_div) if length_cm and width_cm and height_cm else None
-        raw_cbm = (length_cm * width_cm * height_cm / 1000000) if length_cm and width_cm and height_cm else None
+        # 调整后可能为 0 / 负数（客户原值 < 1.0），此时不计材重/CBM
+        has_dim = length_cm > 0 and width_cm > 0 and height_cm > 0
+        raw_vol_wt = (length_cm * width_cm * height_cm / vol_div) if has_dim else None
+        raw_cbm = (length_cm * width_cm * height_cm / 1000000) if has_dim else None
         # 净重 = 实重 / 单箱数量（不是总数量）
         net_wt = round(box_wt / qty, 4) if box_wt and qty else None
 
@@ -929,7 +932,7 @@ def convert_to_hangle(tr, output_path, region='uk', image_url_base=None, order_l
     cbms = []
     for dr in tr.data_rows:
         l, w, h = _row_dims(dr)
-        if l and w and h:
+        if l > 0 and w > 0 and h > 0:
             vol_wts.append(l * w * h / vol_div)
             cbms.append(l * w * h / 1000000)
     total_vol_wt = round(sum(vol_wts), 3) if vol_wts else 0
@@ -985,11 +988,14 @@ def _parse_box_count(box_no):
     return int(m.group(1)) if m else 1
 
 
-def _apply_dim_rule(value, rule='general'):
-    """长宽高提取规则（填入目标发票的尺寸值）。
+def _apply_dim_rule(value):
+    """长宽高提取规则（填入目标发票的尺寸值）：客户原值基础上整体向下调整。
 
-    rule='general'：小数点后第一位 >5 → 直接舍掉小数（45.6→45）；
-                    否则去掉小数后 整体 -0.5（45.5→44.5，45.0→44.5）。
+    规则（2026-09-24 起，天图/航乐-UK/航乐-EU/美琦 统一）：
+      小数尾数 >  0.5 → 抹去小数点后的数据（45.6 → 45）
+      小数尾数 ≤  0.5 → 整数位 -1        （45.5 → 44，45.0 → 44）
+
+    注意：**整数同样 -1**（尾数 0 属于「≤ 0.5」），如 48 → 47。
     输入 None/空 或非数值 → 原样返回（由调用方决定填 ''）。
     """
     if value is None or str(value).strip() == '':
@@ -998,19 +1004,17 @@ def _apply_dim_rule(value, rule='general'):
         num = float(value)
     except (TypeError, ValueError):
         return value
-    int_part = int(num)
-    first_dec = int(abs(num) * 10) % 10  # 小数点后第一位
-    if first_dec > 5:
-        return int_part
-    return int_part - 0.5
+    int_part = math.floor(num)
+    frac = num - int_part
+    return int_part if frac > 0.5 else int_part - 1
 
 
-def _row_dims(dr, rule='general'):
+def _row_dims(dr):
     """返回应用提取规则后的 (长, 宽, 高)，None→0（尺寸写入及 材重/CBM 计算共用）。"""
     return (
-        _apply_dim_rule(dr['C'], rule) or 0,
-        _apply_dim_rule(dr['D'], rule) or 0,
-        _apply_dim_rule(dr['E'], rule) or 0,
+        _apply_dim_rule(dr['C']) or 0,
+        _apply_dim_rule(dr['D']) or 0,
+        _apply_dim_rule(dr['E']) or 0,
     )
 
 
@@ -1449,7 +1453,7 @@ def convert_to_meiqi(tr, output_path, order_list_path=None, expected_station=Non
         ws.cell(row=r, column=4).value = dr['I'] if dr['I'] is not None else ''   # D: 申报数量（单箱）
         ws.cell(row=r, column=5).value = dr['H'] if dr['H'] is not None else ''   # E: 申报单价（美金）
         ws.cell(row=r, column=6).value = dr['B'] if dr['B'] is not None else ''   # F: 货箱重量
-        ws.cell(row=r, column=7).value = _apply_dim_rule(dr['C']) if dr['C'] is not None else ''   # G: 货箱长度（45.6→45、45.5→44.5）
+        ws.cell(row=r, column=7).value = _apply_dim_rule(dr['C']) if dr['C'] is not None else ''   # G: 货箱长度（45.6→45、45.5→44）
         ws.cell(row=r, column=8).value = _apply_dim_rule(dr['D']) if dr['D'] is not None else ''   # H: 货箱宽度
         ws.cell(row=r, column=9).value = _apply_dim_rule(dr['E']) if dr['E'] is not None else ''   # I: 货箱高度
         ws.cell(row=r, column=10).value = dr['K'] if dr['K'] is not None else ''  # J: 海关编码（源原值，不改变格式/不加小数点）
