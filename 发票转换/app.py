@@ -9,6 +9,7 @@
   - 美琦美线
   - 英美-美国
   - 英美-英欧加
+  - 凯鑫
 
 用法:
   python3 app.py [端口号]
@@ -25,7 +26,7 @@ from flask import Flask, request, render_template, send_file, flash, redirect
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from convert_invoice import (TRInvoice, convert_to_tiantu, convert_to_hangle,
-                             convert_to_meiqi, convert_to_yingmei)
+                             convert_to_meiqi, convert_to_yingmei, convert_to_kaixin)
 
 app = Flask(__name__)
 app.secret_key = 'invoice-converter-secret'
@@ -54,6 +55,7 @@ TARGET_OPTIONS = {
     '美琦': '美琦美线发票',
     '英美-美国': '英美-美国空海运发票',
     '英美-英欧加': '英美-欧洲/英国/加拿大发票',
+    '凯鑫': '凯鑫发票',
 }
 
 
@@ -88,7 +90,8 @@ def convert():
         # 生成输出文件名
         base_name = os.path.splitext(invoice_file.filename)[0]
         ext_map = {'天图': '天图', '航乐-uk': '航乐-UK', '航乐-eu': '航乐-EU', '美琦': '美琦',
-                   '英美-美国': '英美-美国', '英美-英欧加': '英美-英欧加'}
+                   '英美-美国': '英美-美国', '英美-英欧加': '英美-英欧加',
+                   '凯鑫': '凯鑫'}
         if target not in ext_map:
             flash('请选择有效的目标格式')
             return redirect('/')
@@ -108,6 +111,8 @@ def convert():
             ok = convert_to_yingmei(tr, output_path, region='us')
         elif target == '英美-英欧加':
             ok = convert_to_yingmei(tr, output_path, region='eu')
+        elif target == '凯鑫':
+            ok = convert_to_kaixin(tr, output_path)
         else:
             flash('请选择有效的目标格式')
             return redirect('/')
@@ -141,7 +146,7 @@ def convert():
 if __name__ == '__main__':
     print('🚀 发票转换 Web 服务已启动')
     print('📍 http://localhost:5000')
-    print('📂 模板: 天图 | 航乐-UK | 航乐-EU | 美琦 | 英美-美国 | 英美-英欧加')
+    print('📂 模板: 天图 | 航乐-UK | 航乐-EU | 美琦 | 英美-美国 | 英美-英欧加 | 凯鑫')
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5001
     print(f'🌐 访问地址: http://localhost:{port}')
     app.run(host='0.0.0.0', port=port, debug=True)

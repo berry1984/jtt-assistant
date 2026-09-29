@@ -155,7 +155,7 @@
   <button class="tab-btn {% if top_active == 'invoice' %}active{% endif %}"
           data-tab="invoice" onclick="switchTab('invoice')">
     📄 发票转换
-    <span class="badge">TR→天图/航乐/美琦/英美</span>
+    <span class="badge">TR→天图/航乐/美琦/英美/凯鑫</span>
   </button>
   <button class="tab-btn {% if top_active == 'picking' %}active{% endif %}"
           data-tab="picking" onclick="switchTab('picking')">
@@ -718,19 +718,20 @@ const DESCS = {
   '美琦': '🇺🇸 美琦美线发票：只需匹配地址库编码（收件人信息留空），提货方式默认「自送货」，报关方式/海关编码自动归一化。输出 .xlsx。',
   '英美-美国': '🇺🇸 英美-美国空海运下单模版：地址直填、币种按目的国（US/CA→USD）、报关方式归一化、带电/带磁是/否。输出 .xlsx。',
   '英美-英欧加': '🇪🇺 英美-欧洲/英国/加拿大下单模版：多 EORI 行，币种按目的国（GB→GBP / 欧洲→EUR / CA→USD）。输出 .xlsx。',
+  '凯鑫': '🌍 凯鑫发票（英欧加/美线通用）：收件人信息按「FBA地址库编码表」自动查表填入（多义仓码按目的国消歧），申报币种归一为中文（美元/英镑/欧元），产品图片嵌入 P 列。输出 .xlsx。',
 };
 
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
   document.getElementById('formatDesc').textContent = DESCS[sel.value] || '';
-  // 订单列表上传区：所有目标（天图/航乐/美琦/英美）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
+  // 订单列表上传区：所有目标（天图/航乐/美琦/英美/凯鑫）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
   const og = document.getElementById('orderListGroup');
   if (og) og.style.display = '';
   // 预计交货站点 / 所在货站：美琦 与 两个英美目标 显示
   const st = document.getElementById('stationGroup');
   const isYingmei = (sel.value === '英美-美国' || sel.value === '英美-英欧加');
   if (st) st.style.display = (sel.value === '美琦' || isYingmei) ? '' : 'none';
-  // 按目标切换候选项与文案（美琦是「仓」叫法，英美是模版自带的 19 个「站点」）
+  // 按目标切换候选项与文案（美琦是「仓」叫法，英美是模版自带的 20 个「站点」；凯鑫无货站字段→整块隐藏）
   const input = document.getElementById('stationInput');
   const note = document.getElementById('stationNote');
   const tip = document.getElementById('stationTip');

@@ -223,11 +223,11 @@ def generate_bill(waybills, template_path, output_path,
 
 ---
 
-### 3.3 发票转换 TR → 天图/航乐/美琦/英美（功能3）
+### 3.3 发票转换 TR → 天图/航乐/美琦/英美/凯鑫（功能3）
 
 **文件**：`发票转换/convert_invoice.py`  
 **入口**：Web `POST /invoice_convert`（主应用）| 独立 Web `python3 发票转换/app.py` | CLI `python3 convert_invoice.py`  
-**模板**：`发票转换/天图单票专用模板20260601.xlsx`、`航乐-UK发票.xlsx`、`航乐-EU发票.xlsx`、`美琦美线发票模版.xlsx`、`英美-美国空海运发票模版9.15更新.xlsx`、`英美-欧洲英国加拿大发票模板9.8更新.xlsx`
+**模板**：`发票转换/天图单票专用模板20260601.xlsx`、`航乐-UK发票.xlsx`、`航乐-EU发票.xlsx`、`美琦美线发票模版.xlsx`、`英美-美国空海运发票模版9.15更新.xlsx`、`英美-欧洲英国加拿大发票模板9.8更新.xlsx`、`凯鑫-发票模版更新20260924.xlsx`
 
 **目标与函数**：
 
@@ -237,9 +237,14 @@ def generate_bill(waybills, template_path, output_path,
 | `航乐-uk` / `航乐-eu` | `convert_to_hangle(tr, out, region='uk'\|'eu', ...)` |
 | `美琦` | `convert_to_meiqi(tr, out, order_list_path=None, expected_station=None)` |
 | `英美-美国` / `英美-英欧加` | `convert_to_yingmei(tr, out, region='us'\|'eu', order_list_path=None, expected_station=None)` |
+| `凯鑫` | `convert_to_kaixin(tr, out, order_list_path=None)` |
 
 > 两个 `英美` 目标是**下单模版**（无运单号/合计块/开票日期），主 sheet `模板`，表头 Row 1-24、明细 Row 25 起数据 Row 26 起；
 > `region='eu'` 比 `us` 多一行 `B20 EORI*`，故币种/货站/备注/箱数整体下移一行。详见 [03-invoice-convert.md](03-invoice-convert.md)。
+>
+> `凯鑫` 主 sheet 也是 `发票`：表头 Row 1-26、明细表头 Row 27、数据 Row 28 起 A–S；收件人 B2–B13 **剥掉模版 VLOOKUP**，
+> 改由 Python 查 `FBA地址库编码表` 写值（多义仓码如 `POZ1`/`WRO5` 按 TR 收件人国家消歧）；B24 币种是**中文** `美元/英镑/欧元`。
+> **不接 `--station`**（模版无货站字段）。
 
 #### 核心类
 
@@ -570,6 +575,7 @@ python3 发票转换/convert_invoice.py <TR发票.xlsx> --to 航乐-eu [输出�
 python3 发票转换/convert_invoice.py <TR发票.xlsx> --to 美琦 --station 清溪仓
 python3 发票转换/convert_invoice.py <TR发票.xlsx> --to 英美-美国 --station 深圳宝安站点
 python3 发票转换/convert_invoice.py <TR发票.xlsx> --to 英美-英欧加 --station 义乌站点
+python3 发票转换/convert_invoice.py <TR发票.xlsx> --to 凯鑫 [输出路径]
 
 # 拣货数据导出
 cd "/Users/admin/bb plan1/拣货数据"

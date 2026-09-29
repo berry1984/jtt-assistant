@@ -7,6 +7,8 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-09-29 | 发票转换：新增 **英美-美国 / 英美-英欧加**（下单模版）与 **凯鑫** 三个目标；尺寸统一走 2026-09-24 下降调整规则 |
+| 2026-09-24 | 发票转换：长宽高改为「客户原值基础下降调整」（尾数 >0.5 抹小数、≤0.5 整数位−1，**整数也−1**） |
 | 2026-07-01 | [📘 开发规范](dev-spec.md) 新增：涵盖技术栈/目录/接口/已知坑/恢复指南 |
 | 2026-07-01 | SR 账单：修复同费用类型覆盖→累加（税金多条分录只取最后一条 bug） |
 | 2026-07-01 | SR 表单：修复 fetch 下载不可用（改原生提交） |
@@ -20,7 +22,7 @@
 |---|------|----------|------|------|
 | 1 | TR账单（3个Excel） | `/` | `TR账单自动生成/gen_bill.py` | [01-tr-bill.md](01-tr-bill.md) |
 | 2 | 思锐账单（2个Excel） | `/sr` | `gen_sr_bill.py` | [02-sr-bill.md](02-sr-bill.md) |
-| 3 | 发票转换 TR→天图/航乐/美琦/英美 | `/invoice` | `发票转换/convert_invoice.py` | [03-invoice-convert.md](03-invoice-convert.md) |
+| 3 | 发票转换 TR→天图/航乐/美琦/英美/凯鑫 | `/invoice` | `发票转换/convert_invoice.py` | [03-invoice-convert.md](03-invoice-convert.md) |
 | 4 | 拣货数据参考值 | `/picking` | `拣货数据/export_picking_data.py` | [04-picking-data.md](04-picking-data.md) |
 | 5 | 投保区间拆分（5区间） | `/insurance` | `投保区间拆分发票/split_insurance_v2.py` | [05-insurance-split.md](05-insurance-split.md) |
 | 6 | 提单 + 电放保函 | `/bl_docs` | `TR账单自动生成/gen_bl_docs.py` | [06-bl-docs.md](06-bl-docs.md) |

@@ -9,6 +9,7 @@ TR发票 → 供应商发票 转换工具
   4. 美琦美线 (--to 美琦)
   5. 英美-美国 (--to 英美-美国)
   6. 英美-英欧加 (--to 英美-英欧加)
+  7. 凯鑫 (--to 凯鑫)
 
 用法：
   python3 convert_invoice.py <TR发票.xlsx> --to 天图 [输出路径]
@@ -17,10 +18,11 @@ TR发票 → 供应商发票 转换工具
   python3 convert_invoice.py <TR发票.xlsx> --to 美琦 [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 英美-美国 [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 英美-英欧加 [输出路径]
+  python3 convert_invoice.py <TR发票.xlsx> --to 凯鑫 [输出路径]
 
 可选参数：
   --order-list <订单列表.xlsx>   按对应订单号回填运单号、抓取供应商服务填 服务/渠道
-  --station <所在货站>           英美「所在货站*」/ 美琦「预计交货站点」
+  --station <所在货站>           英美「所在货站*」/ 美琦「预计交货站点」（凯鑫不使用）
 
 源文件兼容：
   - TR系统下单发票  ✅
@@ -64,6 +66,7 @@ HANGLE_EU_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州�
 MEIQI_TEMPLATE = os.path.join(SCRIPT_DIR, '美琦美线发票模版.xlsx')
 YINGMEI_US_TEMPLATE = os.path.join(SCRIPT_DIR, '英美-美国空海运发票模版9.15更新.xlsx')
 YINGMEI_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '英美-欧洲英国加拿大发票模板9.8更新.xlsx')
+KAIXIN_TEMPLATE = os.path.join(SCRIPT_DIR, '凯鑫-发票模版更新20260924.xlsx')
 
 # 美琦渠道映射：JTT/客户渠道名称 → 美琦服务渠道名称（服务渠道 sheet B 列下拉清单）
 # 未命中映射的渠道保留源名称，并自动追加到下拉清单。
@@ -1620,14 +1623,16 @@ YINGMEI_DATA_HEADER_ROW = 25
 YINGMEI_DATA_START_ROW = 26
 
 
-def _append_channel_option(wb, channel_col, name):
+def _append_channel_option(wb, channel_col, name, sheet_name='渠道列表'):
     """把模版渠道下拉清单里没有的服务名追加进去（美琦「服务渠道」同名规则）。
 
     渠道列表 sheet：US 为单列 A（无表头），EU 为 B 列（B1 是表头「渠道名称」）。
+    凯鑫的 sheet 名为「服务名称」、第 2 列（B1 是表头文字）。
     已存在则不重复追加。
     """
-    ws = wb['渠道列表']
-    for r in range(1, ws.max_row + 1):
+    ws = wb[sheet_name]
+    start = 1 if sheet_name == '渠道列表' else 2
+    for r in range(start, ws.max_row + 1):
         if ws.cell(row=r, column=channel_col).value == name:
             return
     ws.cell(row=ws.max_row + 1, column=channel_col).value = name
@@ -1841,6 +1846,319 @@ def convert_to_yingmei(tr, output_path, region='us', order_list_path=None,
 
 
 # ═══════════════════════════════════════════════════════════════
+#  3.7 凯鑫 转换（英国/欧洲/加拿大/美国通用）
+# ═══════════════════════════════════════════════════════════════
+
+KAIXIN_ADDR_SHEET = 'FBA地址库编码表'
+KAIXIN_SERVICE_SHEET = '服务名称'
+
+# 「FBA地址库编码表」列索引（1-based）
+KAIXIN_ADDR_COLS = {
+    '地址编码': 1, '地址简称': 2, 'FBA仓库代码': 3, '联系人': 4, '公司名': 5,
+    '联系电话': 6, '联系手机': 7, '地址一': 8, '地址二': 9, '地址三': 10,
+    '城市': 11, '省洲': 12, '国家': 13, '邮编': 14,
+}
+
+# 凯鑫「申报币种」下拉是**中文**词表（英镑/美元/欧元），不是英美模版的 ISO 代码
+KAIXIN_CURRENCY_CN = {'USD': '美元', 'GBP': '英镑', 'EUR': '欧元'}
+
+KAIXIN_DATA_HEADER_ROW = 27
+KAIXIN_DATA_START_ROW = 28
+
+
+def _load_kaixin_addr(wb):
+    """构建 凯鑫「FBA地址库编码表」 查表：{地址编码: {字段: 值}}。
+
+    该 sheet 除表头 Row 1 外，还夹着 4 行分区标题（欧洲 / GB 英国 / CA 加拿大 /
+    US 美国），它们是 A:N 的合并单元格、没有第 3 列仓码 —— 必须跳过，
+    否则「欧洲」这种词也会进查表。
+    """
+    ws = wb[KAIXIN_ADDR_SHEET]
+    merged_tops = {str(m).split(':')[0] for m in ws.merged_cells.ranges}
+    lib = {}
+    for r in range(2, ws.max_row + 1):
+        if f'A{r}' in merged_tops:
+            continue
+        code = ws.cell(row=r, column=KAIXIN_ADDR_COLS['地址编码']).value
+        if code is None or not str(code).strip():
+            continue
+        # 真实数据行一定有 FBA 仓库代码
+        if not str(ws.cell(row=r, column=KAIXIN_ADDR_COLS['FBA仓库代码']).value or '').strip():
+            continue
+        lib[str(code).strip()] = {
+            k: ws.cell(row=r, column=c).value for k, c in KAIXIN_ADDR_COLS.items()
+        }
+    return lib
+
+
+def _match_kaixin_addr(lib, wh_code, country=''):
+    """按 地址库编码 / FBA仓库代码 / 地址简称 在凯鑫地址库锁定行。
+
+    凯鑫的地址编码普遍带渠道后缀（如 POZ1-02977 / WRO5-59225），而源发票只给仓码
+    （POZ1 / WRO5），且**同一个仓码可能跨国家重复**（POZ1 同时有 DE 与 PL 两行）。
+    匹配优先级：
+      1) 地址编码 精确 == wh_code
+      2) FBA仓库代码 == wh_code
+      3) 地址简称   == wh_code
+      4) 地址编码 包含 wh_code（len>=3 防过宽）
+    第 2–4 步命中多行时，用 TR「收件人国家代码」消歧，取国家相符的那行；
+    消不了歧则取表中第一行。未命中返回 None → 调用方回退源字段。
+    """
+    if not wh_code:
+        return None
+    w = str(wh_code).strip()
+    ctry = str(country or '').strip().upper()
+
+    def pick(rows):
+        if not rows:
+            return None
+        if ctry:
+            for row in rows:
+                if str(row.get('国家') or '').strip().upper() == ctry:
+                    return row
+        return rows[0]
+
+    if w in lib:
+        return lib[w]
+    for key in ('FBA仓库代码', '地址简称'):
+        hit = pick([row for row in lib.values()
+                    if str(row.get(key) or '').strip() == w])
+        if hit:
+            return hit
+    if len(w) >= 3:
+        return pick([row for row in lib.values()
+                     if w in str(row.get('地址编码') or '')])
+    return None
+
+
+def _normalize_kaixin_currency(value, country=''):
+    """凯鑫「申报币种」归一到模版中文词表：美元 / 英镑 / 欧元。
+
+    优先认源值（USD/美元/美金 → 美元，GBP/英镑 → 英镑，EUR/欧元 → 欧元）；
+    源值认不出（TR 发票该字段常为空）则按目的国推断，复用英美的国家集合
+    （US/CA→美元、GB/UK→英镑、欧洲→欧元），另补 凯鑫地址库里出现的 MX→美元。
+    """
+    v = str(value).strip() if value is not None else ''
+    if v in KAIXIN_CURRENCY_CN.values():
+        return v
+    vu = v.upper()
+    if 'USD' in vu or '美金' in v or '美元' in v:
+        return '美元'
+    if 'GBP' in vu or '英镑' in v:
+        return '英镑'
+    if 'EUR' in vu or '欧元' in v:
+        return '欧元'
+    ctry = str(country or '').strip().upper()
+    if ctry in ('MX', 'MEX'):
+        return '美元'
+    return KAIXIN_CURRENCY_CN.get(_currency_for_country(ctry), v)
+
+
+def convert_to_kaixin(tr, output_path, order_list_path=None):
+    """TR发票 → 凯鑫发票格式
+
+    凯鑫模版「发票」sheet：头部 Row 1-26（A=标签、B=值），明细表头 Row 27，
+    数据 Row 28 起、A-S 列。辅助 sheet：「FBA地址库编码表」（地址查表）、
+    「服务名称」（B 列渠道下拉）。
+
+    规则要点：
+      - 收件人信息 B2-B13 **剥掉模版 VLOOKUP**：在 Python 里查「FBA地址库编码表」
+        取解析值写入（模版自带的是精确 VLOOKUP，对 POZ1/WRO5 这类带渠道后缀的编码
+        会 #N/A）；多义编码按 TR 收件人国家消歧。查不到回退源字段。
+      - 申报币种 B24 归一到模版中文词表（美元/英镑/欧元）——**不是** ISO 代码。
+      - 报关方式 B17 只能映射 `报关退税`/`买单报关`（本模版下拉只有这两个词，
+        **没有**「合并报关」；也**不要**复用美琦的 一般贸易/代理报关）。
+      - 明细 A 列货箱编号保留源箱号原值（不重编号、不逐箱展开）。
+      - 长/宽/高走 _apply_dim_rule（2026-09-24 下降调整规则），写入 G/H/I。
+      - 产品图片从源发票提取、嵌入 P 列（模版原有的两张样例图在 P27/P28，全清）。
+      - 必填列（表头带 *）源值为空时补「/」，不留空。
+    """
+    if not os.path.exists(KAIXIN_TEMPLATE):
+        print(f'❌ 凯鑫模板不存在: {KAIXIN_TEMPLATE}')
+        return False
+
+    print(f'📄 凯鑫模板: {KAIXIN_TEMPLATE}')
+
+    shutil.copy(KAIXIN_TEMPLATE, output_path)
+    wb = load_workbook(output_path)
+    ws = wb['发票']
+    template_last_formatted_row = ws.max_row
+
+    # ── 地址库查表 ──
+    addr_lib = _load_kaixin_addr(wb)
+    country = (tr.get('收件人国家代码(二字代码)', '')
+               or tr.get('收件人国家代码', '') or '').strip()
+    wh_code = (tr.get('地址库编码', '') or tr.get('收件人姓名', '') or '').strip()
+    matched = _match_kaixin_addr(addr_lib, wh_code, country)
+    if matched is None:
+        print(f'   ⚠️ 地址库编码未在「FBA地址库编码表」命中: {wh_code or "(空)"}，收件人信息回退源字段')
+
+    def addr(field, fallback=''):
+        if matched:
+            v = matched.get(field)
+            if v is not None and str(v).strip():
+                return v
+        return fallback if fallback is not None else ''
+
+    def set_cell(col, row, value):
+        ws[f'{col}{row}'] = value if value is not None else ''
+
+    # ── B1 服务：订单列表「供应商服务」优先，未命中回退源服务；不在下拉清单则追加 ──
+    service = _match_supplier_service(tr, order_list_path) or tr.get('服务', '') or ''
+    if service:
+        _append_channel_option(wb, 2, service, sheet_name=KAIXIN_SERVICE_SHEET)
+    set_cell('B', 1, service)
+
+    # ── B2 地址库编码（TR 无此列，实测回退到「收件人姓名」= 仓码） ──
+    set_cell('B', 2, wh_code)
+
+    # ── B3-B13 收件人信息：地址库解析值优先，回退源字段 ──
+    src_company = tr.get('收件人公司', '') or ''
+    if str(src_company).strip() == wh_code:
+        src_company = ''          # 防把仓码当公司名写进去
+    src_addr1 = tr.get('收件人地址一', '') or ''
+    if str(src_addr1).strip() == wh_code:
+        src_addr1 = tr.get('收件人地址二', '') or ''
+
+    set_cell('B', 3, addr('联系人', tr.get('收件人姓名', '')))
+    set_cell('B', 4, addr('公司名', src_company))
+    set_cell('B', 5, addr('地址一', src_addr1))
+    set_cell('B', 6, addr('地址二', tr.get('收件人地址二', '')))
+    set_cell('B', 7, addr('地址三', tr.get('收件人地址三', '')))
+    set_cell('B', 8, addr('城市', tr.get('收件人城市', '')))
+    set_cell('B', 9, addr('省洲', tr.get('收件人省份/州', '')))
+    set_cell('B', 10, addr('邮编', tr.get('收件人邮编', '')))
+    set_cell('B', 11, addr('国家', country))
+    set_cell('B', 12, tr.get('收件人电话', '') or addr('联系电话') or addr('联系手机'))
+    set_cell('B', 13, tr.get('收件人邮箱', ''))
+
+    # ── B14 客户订单号 ──
+    set_cell('B', 14, _match_waybill(tr, order_list_path) or tr.get('客户订单号', ''))
+
+    # ── B15/B16 带电/带磁（本模版词表是 是/否） ──
+    set_cell('B', 15, '是' if tr.get('带电', '否') == '是' else '否')
+    set_cell('B', 16, '是' if tr.get('带磁', '否') == '是' else '否')
+
+    # ── B17 报关方式 → 本模版下拉只有 报关退税/买单报关（无「合并报关」） ──
+    customs = str(tr.get('报关方式', '') or '').strip()
+    if customs not in ('报关退税', '买单报关'):
+        if '退税' in customs:
+            customs = '报关退税'
+        elif '买单' in customs:
+            customs = '买单报关'
+    set_cell('B', 17, customs)
+
+    # ── B18 交税方式（模版下拉：包税/自主税号/自税递延） ──
+    set_cell('B', 18, tr.get('交税方式', '') or tr.get('清关方式', ''))
+
+    # ── B19-B23 VAT / EORI / VAT注册国家 / VAT公司英文名 / VAT注册地址 ──
+    set_cell('B', 19, tr.get('VAT号', ''))
+    set_cell('B', 20, tr.get('EORI号', ''))
+    set_cell('B', 21, tr.get('VAT注册国家', ''))
+    set_cell('B', 22, tr.get('VAT公司英文名', ''))
+    set_cell('B', 23, tr.get('VAT注册地址', ''))
+
+    # ── B24 申报币种 / B25 备注 / B26 箱数 ──
+    set_cell('B', 24, _normalize_kaixin_currency(tr.get('申报币种', ''), country))
+    set_cell('B', 25, tr.get('备注', ''))
+    box_total = tr.get('箱数', '')
+    if box_total in (None, ''):
+        box_total = sum(_parse_box_count(dr['A']) for dr in tr.data_rows)
+    set_cell('B', 26, box_total)
+
+    # ══════════════════════════════════════════════
+    #  明细 Row 28+（A-S 列）
+    # ══════════════════════════════════════════════
+
+    # 清掉模版自带的两条样例数据（Row 28-29，A-S）
+    for r in range(KAIXIN_DATA_START_ROW, KAIXIN_DATA_START_ROW + 2):
+        for c in range(1, 20):
+            ws.cell(row=r, column=c).value = None
+
+    # 摘掉样例行残留的超链接。⚠️ 模版把链接挂在 cell.hyperlink 上（载入时
+    # ws._hyperlinks 是空的），O28/O29 各挂一个 amazon.co.uk 样例链接；
+    # 只清 value 不够 —— openpyxl 保存时会把 hyperlink.target 回填成单元格内容，
+    # 输出里就会冒出样例 URL 并带外链。
+    for _row in ws.iter_rows(min_row=KAIXIN_DATA_START_ROW,
+                             max_row=KAIXIN_DATA_START_ROW + len(tr.data_rows) + 2,
+                             max_col=19):
+        for _cell in _row:
+            if _cell.hyperlink is not None:
+                _cell.hyperlink = None
+
+    # 模版自带的图片是 P27（表头样例图）与 P28（样例数据图）——都是样例，全部丢弃
+    ws._images = []
+
+    def _item_cell(col, r, value, required=True):
+        """写明细单元格；超出模版已格式化范围时从第 28 行复制样式。
+
+        必填列（表头带 *）源值为空时补「/」，不留空。
+        """
+        if r > template_last_formatted_row:
+            src = ws[f'{col}{KAIXIN_DATA_START_ROW}']
+            dst = ws[f'{col}{r}']
+            dst.font = copy(src.font)
+            dst.border = copy(src.border)
+            dst.fill = copy(src.fill)
+            dst.alignment = copy(src.alignment)
+            dst.protection = copy(src.protection)
+            if src.number_format:
+                dst.number_format = src.number_format
+        if required and (value is None or not str(value).strip()):
+            value = '/'
+        cell = ws[f'{col}{r}']
+        cell.value = value if value is not None else ''
+        return cell
+
+    pending_images = {}
+    for i, dr in enumerate(tr.data_rows):
+        r = KAIXIN_DATA_START_ROW + i
+        if r > template_last_formatted_row:
+            ws.row_dimensions[r].height = 37   # 图片列 P 需要足够高度
+
+        _item_cell('A', r, dr['A'])            # 货箱编号：源箱号原值
+        _item_cell('B', r, dr['F'])            # 产品英文品名
+        _item_cell('C', r, dr['G'])            # 产品中文品名
+        _item_cell('D', r, dr['I'])            # 产品申报数量（单箱）
+        _item_cell('E', r, dr['H'])            # 产品申报单价
+        _item_cell('F', r, dr['B'])            # 货箱重量(KG)
+        _item_cell('G', r, _apply_dim_rule(dr['C']))   # 货箱长度(CM)
+        _item_cell('H', r, _apply_dim_rule(dr['D']))   # 货箱宽度(CM)
+        _item_cell('I', r, _apply_dim_rule(dr['E']))   # 货箱高度(CM)
+        _item_cell('J', r, dr['K'])            # 国内产品海关编码（源原值不加小数点）
+        _item_cell('K', r, dr['M'])            # 产品品牌
+        _item_cell('L', r, dr['J'])            # 产品材质
+        _item_cell('M', r, dr['N'], required=False)    # 产品型号（模版未标 *）
+        _item_cell('N', r, dr['L'])            # 产品用途
+        _item_cell('O', r, dr['O'])            # 产品销售链接
+
+        # P 产品图片：源图嵌入；无图补「/」
+        src_row = dr.get('_row')
+        img_bytes = tr.images.get(src_row) if src_row else None
+        if img_bytes:
+            _item_cell('P', r, '[图片]')
+            pending_images[f'P{r}'] = img_bytes
+        else:
+            _item_cell('P', r, '/')
+
+        _item_cell('Q', r, dr['U'])                            # 产品SKU
+        _item_cell('R', r, dr.get('V') or tr.get('PO Number', ''))   # PO Number
+        _item_cell('S', r, dr['S'])                            # 产品ASIN
+
+    wb.save(output_path)
+
+    if pending_images:
+        _embed_images_as_cell_images(output_path, pending_images, None)
+
+    print(f'✅ 凯鑫发票已生成: {os.path.basename(output_path)}')
+    print(f'   数据: {len(tr.data_rows)} 行, 箱数: {box_total}, '
+          f'币种: {ws["B24"].value or "(空)"}, 地址库命中: {"是" if matched else "否"}, '
+          f'图片: {len(pending_images)}')
+    return True
+
+
+
+# ═══════════════════════════════════════════════════════════════
 #  4. 批处理 — 目录中所有 TR 发票
 # ═══════════════════════════════════════════════════════════════
 
@@ -1856,7 +2174,8 @@ def batch_convert(input_dir, output_dir, target='天图'):
     files = [f for f in os.listdir(input_dir)
              if f.endswith('.xlsx') and '订单' not in f
              and '模板' not in f and '模版' not in f and '天图' not in f
-             and '航乐' not in f and '美琦' not in f and '英美' not in f]
+             and '航乐' not in f and '美琦' not in f and '英美' not in f
+             and '凯鑫' not in f]
     files.sort()
 
     if not files:
@@ -1893,6 +2212,8 @@ def batch_convert(input_dir, output_dir, target='天图'):
                 ok = convert_to_yingmei(tr, out_path, region='us')
             elif target == '英美-英欧加':
                 ok = convert_to_yingmei(tr, out_path, region='eu')
+            elif target == '凯鑫':
+                ok = convert_to_kaixin(tr, out_path)
             else:
                 print(f'❌ 未知目标格式: {target}')
                 return
@@ -2201,6 +2522,7 @@ def main():
   python3 convert_invoice.py TR发票.xlsx --to 英美-美国 --station 深圳宝安站点
   python3 convert_invoice.py TR发票.xlsx --to 英美-英欧加 --station 义乌站点
   python3 convert_invoice.py TR发票.xlsx --to 美琦 --station 清溪仓
+  python3 convert_invoice.py TR发票.xlsx --to 凯鑫 --order-list 订单列表.xlsx
   python3 convert_invoice.py --batch --in-dir ./发票 --to 天图 --out-dir ./输出
         """
     )
@@ -2208,7 +2530,7 @@ def main():
                         help='TR发票 .xlsx 文件路径')
     parser.add_argument('--to', '-t', default='天图',
                         choices=['天图', '航乐-uk', '航乐-eu', '美琦',
-                                 '英美-美国', '英美-英欧加'],
+                                 '英美-美国', '英美-英欧加', '凯鑫'],
                         help='目标供应商格式 (默认: 天图)')
     parser.add_argument('output', nargs='?',
                         help='输出文件路径 (可选，默认自动生成)')
@@ -2267,6 +2589,9 @@ def main():
         elif args.to == '英美-英欧加':
             args.output = os.path.join(os.path.dirname(args.input),
                                        f'{base_name}-英美-英欧加.xlsx')
+        elif args.to == '凯鑫':
+            args.output = os.path.join(os.path.dirname(args.input),
+                                       f'{base_name}-凯鑫.xlsx')
 
     # 执行转换
     if args.to == '天图':
@@ -2284,6 +2609,8 @@ def main():
     elif args.to == '英美-英欧加':
         convert_to_yingmei(tr, args.output, region='eu', order_list_path=args.order_list,
                            expected_station=args.station)
+    elif args.to == '凯鑫':
+        convert_to_kaixin(tr, args.output, order_list_path=args.order_list)
 
 
 if __name__ == '__main__':
