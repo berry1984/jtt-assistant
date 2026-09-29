@@ -14,7 +14,9 @@
   - 长宽高(G/H/I) = 参考长 / 参考宽 / 参考高（参考尺寸，非发票实际尺寸）
   - J列(计费重) = 参考值「计费重」列数值；该列是公式且无缓存值时按模版公式复刻
     ROUND(MAX(参考实重×箱数, 参考材积重×箱数))
-  - 单价(K列) = 参考值「应收单价」列原值；为空即留空，不回退仓库/前缀匹配
+  - 单价(K列) = 参考值「应收单价」列原值；同 (系统SO号, 客户渠道, 仓库代码) 的组内若只有
+    首行给了单价（参考值模版把该列按组合并，组内其余行为空），则**组内回填同一单价**——
+    整组共用一个单价（2026-09-29）；整组皆空仍留空，不回退仓库/前缀匹配
   - 备注(AB) = `VAT:{VAT号}`，VAT号 按 (运单号=系统SO号, FBA ID) 匹配参考值「VAT号」列；无则留空
   - S列(报关费) = 350/1.06, 报关费与税额按每一行填写（不区分报关组）
   - sheet1 B2 = 第2个sheet合计行的 Q+R+U+W+V+X+Y（国际运费1+国际运费2+清关费+附加费+税金+其他费用+退税损失）
@@ -153,8 +155,10 @@ def _parse_reference(ref_path):
       X=参考实重  Y=参考长  Z=参考宽  AA=参考高  AF=计费重
     注：本函数按**表头名**匹配（`_norm_header`/`_find_col`），不依赖列号，
     所以参考值表增删列（如 VAT号）不影响解析；上面的字母仅作阅读参考。
-    下单时间/SO/渠道/国家/仓库代码 只在分组首行填写（跨行合并），需向下填充；
+    下单时间/SO/渠道/国家/仓库代码/应收单价 只在分组首行填写（跨行合并），需向下填充；
     这几列若为**合并单元格**，按合并区间取值——区间内每一行取同一个值（`_merged_fill`）。
+    ⚠️ 应收单价不在 `_merged_fill` 的名单里（它是数值列，若整组无价还要保持留空），
+    改在建表后按 (系统SO号, 客户渠道, 仓库代码) **组内回填**（见下方「单价组内回填」）。
 
     返回:
       ref_rows: [{so, order_time, fba, wh, channel, country, supplier_ch, e_price,
@@ -268,14 +272,6 @@ def _parse_reference(ref_path):
         if fba in (None, ''):
             continue
         e_price = r[e_c - 1]
-        # 报价表A：同渠道+同仓点若单价不同要各列一条，故按 (渠道, 仓库, 单价) 三元组去重；
-        # 单价先归一化（13 / '13 ' / 13.0 是同一条），真正写表时还会按
-        # (月份, 周, 渠道, 仓库, 单价) 再兜一次（见 generate_bill）
-        if cur_wh:
-            key = (cur_ch, cur_wh, _price_key(e_price))
-            if key not in seen_prices:
-                seen_prices.add(key)
-                price_rows_raw.append((cur_ch, cur_wh, e_price))
         ref_rows.append({
             'so': cur_so,
             'order_time': cur_order_time,
@@ -299,6 +295,56 @@ def _parse_reference(ref_path):
             # VAT号（拣货模块 2026-09-21 起输出；旧参考值文件没这列则留空）
             'vat': _s(r[vat_c - 1]) if vat_c else '',
         })
+
+    # ── 单价组内回填（2026-09-29）──────────────────────────────────────────
+    # 参考值表的「应收单价」属于组头信息：模版就是把该列按 (系统SO号, 客户渠道, 仓库代码)
+    # 分组合并（E2:E5 之类），值只落在区间左上角；手工整理的参考值也常只在组首行写一次。
+    # 原实现逐行原样取 e_price → 账单 K 列**每组只有第一行有单价**，L/M/N(=K*…) 与
+    # O~R、合计 AA 在组内其余行全被算成 0（用户 2026-09-29 反馈的「单价只填充一行」）。
+    # 回填规则：同组取**首个非空单价**，填该组所有空行；已有非空单价的行走原值不回写
+    # （保留按计费重分档的差异）；整组皆空保持留空（不回退仓库/前缀匹配）。
+    _price_groups = {}
+    _group_prices = {}
+    for row in ref_rows:
+        _gk = (_text_key(row.get('so')), _text_key(row.get('channel')),
+               _text_key(row.get('wh')))
+        _pv = row.get('e_price')
+        if _pv in (None, ''):
+            _price_groups.setdefault(_gk, []).append(row)
+            continue
+        _prices = _group_prices.setdefault(_gk, [])
+        if _price_key(_pv) not in [_price_key(x) for x in _prices]:
+            _prices.append(_pv)
+
+    _filled = 0
+    _conflicts = []
+    for _gk, _rows in _price_groups.items():
+        _prices = _group_prices.get(_gk) or []
+        if not _prices:
+            continue                      # 整组无价 → 保持留空
+        if len(_prices) > 1:
+            _conflicts.append((_gk, _prices))
+        for row in _rows:
+            row['e_price'] = _prices[0]
+            _filled += 1
+    if _filled:
+        print(f'💹 单价组内回填：{_filled} 行按 (单号, 渠道, 仓库代码) 补齐「应收单价」'
+              f'（另有 {len(ref_rows) - _filled} 行本就有单价）')
+    for _gk, _prices in _conflicts:
+        print(f'  ⚠️  同组出现多个不同单价（已按首个取值）：{_gk[0] or "(无SO)"} / '
+              f'{_gk[1] or "(无渠道)"} / {_gk[2] or "(无仓库)"} → {_prices}')
+
+    # 报价表A：同渠道+同仓点若单价不同要各列一条，故按 (渠道, 仓库, 单价) 三元组去重；
+    # 单价先归一化（13 / '13 ' / 13.0 是同一条），真正写表时还会按
+    # (月份, 周, 渠道, 仓库, 单价) 再兜一次（见 generate_bill）。
+    # ⚠️ 必须在「单价组内回填」之后建：否则组首行无价、组内某行有价的组只会登记一条空单价。
+    for row in ref_rows:
+        if not row.get('wh'):
+            continue
+        key = (row.get('channel'), row.get('wh'), _price_key(row.get('e_price')))
+        if key not in seen_prices:
+            seen_prices.add(key)
+            price_rows_raw.append((row.get('channel'), row.get('wh'), row.get('e_price')))
     return ref_rows, price_rows_raw
 
 
@@ -371,7 +417,7 @@ def build_rows(ref_rows):
       D 走货渠道 ← 客户渠道        E 仓库代码 ← 仓库代码   F 箱数 ← 总箱数(CTN)
       G/H/I 长宽高 ← 参考长/参考宽/参考高（参考尺寸）
       J 计费重 ← 计费重列（公式无缓存值时复刻公式）
-      K 应收单价 ← 应收单价列原值（为空即留空）
+      K 应收单价 ← 应收单价列原值（空行已在 _parse_reference 按 SO+渠道+仓库代码 组内回填）
       AB 备注 ← 按 (系统SO号, FBA ID) 匹配参考值「VAT号」列 → 写成 `VAT:{号}`；无则留空
 
     计费重为 0 的行（无实际货量）会被丢弃——报关费按行收取，留 0 行会凭空多算报关费；
@@ -420,7 +466,8 @@ def build_rows(ref_rows):
             'height': to_num(ref.get('ref_h')),
             'weight': round(ref_weight),
             'weight_raw': ref_weight,
-            # 应收单价原样透传：'' 表示参考值 F 列为空（账单 K 列留空，不回退匹配）
+            # 应收单价：'' 表示该 (SO, 渠道, 仓库代码) 组整组无单价（账单 K 列留空，
+            # 不回退匹配）；组内空行已在 _parse_reference 回填为组内首个单价
             'unit_price': '' if e_price in (None, '') else e_price,
             # 备注 = VAT:{VAT号}；参考值无该列/该行为空 → 留空
             'vat': vat_map.get((_text_key(ref.get('so')), _text_key(ref.get('fba'))))
