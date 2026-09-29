@@ -27,6 +27,8 @@ TEMPLATES_DIR = os.path.join(MODULE_DIR, 'templates_bl')
 BL_SEA = os.path.join(TEMPLATES_DIR, '提单By sea.pdf')
 BL_TRAIN = os.path.join(TEMPLATES_DIR, '提单By train.pdf')
 BL_TRUCK = os.path.join(TEMPLATES_DIR, '提单By truck.pdf')
+# By air 无独立模板，复用 By sea 版式（字段坐标完全一致）
+BL_AIR = BL_SEA
 TELEX = os.path.join(TEMPLATES_DIR, '电放保函.xlsx')
 
 # ── 标准发货人/收货人（上传数据缺 Shipper/Consignee 列或为空时的兜底）──
@@ -266,6 +268,10 @@ def _load_shipments(excel_path):
             continue
 
         # 向下填充：属于填充列表且当前为 None 的列，从上一条缓存取值
+        # 本行自带 B/L No. → 新的一票，不能继承上一票的空白列（否则会把上一票的
+        # 船名航次/箱号填到本票上），先清空缓存再填充
+        if _safe_str(d.get('B/L No.', '')).strip():
+            fill_cache.clear()
         for col_name in FILL_DOWN_COLS:
             if col_name in d and d[col_name] is None and col_name in fill_cache:
                 d[col_name] = fill_cache[col_name]
@@ -394,6 +400,7 @@ def _get_bl_template(template_type):
         'by sea':  BL_SEA,
         'by train': BL_TRAIN,
         'by truck': BL_TRUCK,
+        'by air':  BL_AIR,
     }
     return mapping.get(template_type.lower().strip())
 
@@ -499,7 +506,8 @@ def _gen_bl(shipment, out_dir, jtt_part=None, total_cartons=None):
     F = _data_fns()
     tt = template_type.lower().strip()
 
-    if tt in ('by sea', 'by train'):
+    if tt in ('by sea', 'by train', 'by air'):
+        # by air 复用 by sea 坐标（is_train 仅控制 By train 多出的清除区）
         clear_rects, inserts = _sea_train_fields(tt == 'by train')
     elif tt == 'by truck':
         clear_rects, inserts = _truck_fields()

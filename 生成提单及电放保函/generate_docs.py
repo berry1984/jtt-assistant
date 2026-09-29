@@ -4,7 +4,8 @@
 根据 TR 退税资料明细.xlsx 的"5月提单信息"页面，对应生成提单和电放保函
 
 规则：
-- 引用模板：By sea → 提单By sea.pdf, By train → 提单By train.pdf, By truck → 提单By truck.pdf
+- 引用模板：By sea → 提单By sea.pdf, By train → 提单By train.pdf, By truck → 提单By truck.pdf,
+            By air → 复用 提单By sea.pdf
 - 跳过 Place of receipt = "查验" 的货件
 - 文件名格式：JTT号+渠道+箱数+提单/电放保函.后缀
 """
@@ -25,6 +26,8 @@ OUTPUT_DIR = os.path.join(BASE_DIR, 'output_5月')
 BL_SEA_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By sea.pdf')
 BL_TRUCK_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By truck.pdf')
 BL_TRAIN_TEMPLATE = os.path.join(TEMPLATE_DIR, '提单By train.pdf')
+# By air 无独立模板，复用 By sea 版式（字段坐标完全一致）
+BL_AIR_TEMPLATE = BL_SEA_TEMPLATE
 TELEX_TEMPLATE = os.path.join(TEMPLATE_DIR, '电放保函模板.xlsx')
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -188,6 +191,10 @@ def load_shipments():
             continue
 
         # 向下填充：属于填充列表且当前为 None 的列，从上一条缓存取值
+        # 本行自带 B/L No. → 新的一票，不能继承上一票的空白列（否则会把上一票的
+        # 船名航次/箱号填到本票上），先清空缓存再填充
+        if _safe_str(d.get('B/L No.', '')).strip():
+            fill_cache.clear()
         for col_name in FILL_DOWN_COLS:
             if col_name in d and d[col_name] is None and col_name in fill_cache:
                 d[col_name] = fill_cache[col_name]
@@ -225,6 +232,7 @@ def _get_template_path(template_type):
         'by sea': BL_SEA_TEMPLATE,
         'by truck': BL_TRUCK_TEMPLATE,
         'by train': BL_TRAIN_TEMPLATE,
+        'by air': BL_AIR_TEMPLATE,
     }
     return mapping.get(template_type.lower().strip())
 
@@ -551,7 +559,8 @@ def generate_bl(shipment, jtt_part=None, total_cartons=None):
         page = doc[0]
         tt = template_type.lower().strip()
 
-        if tt in ('by sea', 'by train'):
+        if tt in ('by sea', 'by train', 'by air'):
+            # by air 复用 by sea 坐标（is_train 仅控制 By train 多出的清除区）
             is_train = (tt == 'by train')
             clear_rects, inserts = sea_train_fields(is_train)
         elif tt == 'by truck':

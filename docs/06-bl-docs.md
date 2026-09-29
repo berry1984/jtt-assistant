@@ -14,6 +14,8 @@
 
 **数据预处理**：
 - 向下填充：B/L No、渠道、引用模板、船名航次等空白行继承上行
+- **本行自带 `B/L No.` 时先清空继承缓存**：该行是新的一票，其空白列不得沿用上一票的值
+  （否则会把上一票的 `Voy.No` / `Container no.` 填到本票上）
 - 跳过 `Place of receipt = "查验"`
 - 跳过非 `JTT` 开头的行（底部备注）
 
@@ -24,6 +26,9 @@
 | By sea | `templates_bl/提单By sea.pdf` |
 | By train | `templates_bl/提单By train.pdf` |
 | By truck | `templates_bl/提单By truck.pdf` |
+| By air | 复用 `templates_bl/提单By sea.pdf`（字段坐标一致） |
+
+> 大小写不敏感（`by sea` / `By Sea` / `BY sea` 均可）。
 
 ## 按 B/L No 合并
 
