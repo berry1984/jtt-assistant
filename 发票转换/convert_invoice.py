@@ -7,12 +7,20 @@ TR发票 → 供应商发票 转换工具
   2. 航乐英国 (--to 航乐-uk)
   3. 航乐欧洲 (--to 航乐-eu)
   4. 美琦美线 (--to 美琦)
+  5. 英美-美国 (--to 英美-美国)
+  6. 英美-英欧加 (--to 英美-英欧加)
 
 用法：
   python3 convert_invoice.py <TR发票.xlsx> --to 天图 [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 航乐-uk [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 航乐-eu [输出路径]
   python3 convert_invoice.py <TR发票.xlsx> --to 美琦 [输出路径]
+  python3 convert_invoice.py <TR发票.xlsx> --to 英美-美国 [输出路径]
+  python3 convert_invoice.py <TR发票.xlsx> --to 英美-英欧加 [输出路径]
+
+可选参数：
+  --order-list <订单列表.xlsx>   按对应订单号回填运单号、抓取供应商服务填 服务/渠道
+  --station <所在货站>           英美「所在货站*」/ 美琦「预计交货站点」
 
 源文件兼容：
   - TR系统下单发票  ✅
@@ -54,6 +62,8 @@ HANGLE_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票
 HANGLE_UK_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户名称 客户单号 英国发票模板9.9更新.xlsx')
 HANGLE_EU_TEMPLATE_XLSX = os.path.join(SCRIPT_DIR, '航乐-客户单号- 欧州发票模板2.26更新.xlsx')
 MEIQI_TEMPLATE = os.path.join(SCRIPT_DIR, '美琦美线发票模版.xlsx')
+YINGMEI_US_TEMPLATE = os.path.join(SCRIPT_DIR, '英美-美国空海运发票模版9.15更新.xlsx')
+YINGMEI_EU_TEMPLATE = os.path.join(SCRIPT_DIR, '英美-欧洲英国加拿大发票模板9.8更新.xlsx')
 
 # 美琦渠道映射：JTT/客户渠道名称 → 美琦服务渠道名称（服务渠道 sheet B 列下拉清单）
 # 未命中映射的渠道保留源名称，并自动追加到下拉清单。
@@ -1032,6 +1042,54 @@ def _format_hs_code(val):
     return s
 
 
+# 英美下单模版「报关方式」下拉词表（两份模版一致）
+YINGMEI_CUSTOMS_OPTIONS = ('买单报关', '报关退税', '合并报关')
+
+# 英美模版「申报币种」按目的国的推断集合
+YINGMEI_USD_COUNTRIES = {'US', 'USA', 'CA', 'CAN'}
+YINGMEI_GBP_COUNTRIES = {'GB', 'UK', 'GBR'}
+YINGMEI_EUR_COUNTRIES = {
+    'DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'PL', 'CZ', 'AT', 'SE', 'DK', 'FI', 'IE',
+    'PT', 'GR', 'HU', 'RO', 'SK', 'SI', 'HR', 'BG', 'LT', 'LV', 'EE', 'LU',
+    'NO', 'CH', 'EU',
+}
+
+
+def _normalize_customs_yingmei(value, default='报关退税'):
+    """TR 报关方式 → 英美模版下拉词表（买单报关/报关退税/合并报关）。
+
+    注意：**不要**复用美琦的规则（退税→一般贸易、代理→代理报关）——那两个值
+    不在英美模版的下拉词表里，会被 Excel 标错、承运商可能拒收。
+    TR 语料里实际只出现过「报关退税」。空值 → 模版口径默认「报关退税」。
+    """
+    v = str(value).strip() if value is not None else ''
+    if v in YINGMEI_CUSTOMS_OPTIONS:
+        return v
+    if '退税' in v:
+        return '报关退税'
+    if '买单' in v:
+        return '买单报关'
+    if '合并' in v:
+        return '合并报关'
+    return v or default
+
+
+def _currency_for_country(country, fallback=''):
+    """英美模版申报币种：美国/加拿大 → USD，英国 → GBP，欧洲其他国家 → EUR。
+
+    未识别的国家代码回退 fallback（通常是源发票「申报币种」），再空则返回空串。
+    模版使用说明第 5 条口径：申报币种美国填写 USD，欧洲是 EUR，英国是 GBP。
+    """
+    c = str(country).strip().upper() if country is not None else ''
+    if c in YINGMEI_USD_COUNTRIES:
+        return 'USD'
+    if c in YINGMEI_GBP_COUNTRIES:
+        return 'GBP'
+    if c in YINGMEI_EUR_COUNTRIES:
+        return 'EUR'
+    return str(fallback).strip() if fallback is not None else ''
+
+
 def _extract_fba_id(box_no):
     """从货箱编号提取物品 FBA ID：'U00000' 之前的 12 个字符。
 
@@ -1531,6 +1589,258 @@ def _guess_product_category(tr):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  3.6 英美 下单模版 转换 (美国空海运 / 欧洲·英国·加拿大)
+# ═══════════════════════════════════════════════════════════════
+
+# 两份英美模版都是「下单模版」：主 sheet「模板」，A 列标签 / B 列值 的表头网格
+# Row 1-24，明细表头 Row 25，数据 Row 26+（模版内当前无样例行、无合计行）。
+# 唯一结构差异：EU 多一行 B20 EORI*，使 申报币种/所在货站/备注/箱数 整体后移一行。
+YINGMEI_SPECS = {
+    'us': {
+        'template': YINGMEI_US_TEMPLATE,
+        'label': '英美-美国空海运',
+        'currency_row': 20,
+        'station_row': 21,
+        'has_eori': False,
+        'channel_col': 1,        # 渠道列表：单列 A，无表头
+        'last_item_col': 'X',
+    },
+    'eu': {
+        'template': YINGMEI_EU_TEMPLATE,
+        'label': '英美-欧洲/英国/加拿大',
+        'currency_row': 21,
+        'station_row': 22,
+        'has_eori': True,
+        'channel_col': 2,        # 渠道列表：B 列为渠道名称，B1 是表头
+        'last_item_col': 'Z',
+    },
+}
+
+YINGMEI_DATA_HEADER_ROW = 25
+YINGMEI_DATA_START_ROW = 26
+
+
+def _append_channel_option(wb, channel_col, name):
+    """把模版渠道下拉清单里没有的服务名追加进去（美琦「服务渠道」同名规则）。
+
+    渠道列表 sheet：US 为单列 A（无表头），EU 为 B 列（B1 是表头「渠道名称」）。
+    已存在则不重复追加。
+    """
+    ws = wb['渠道列表']
+    for r in range(1, ws.max_row + 1):
+        if ws.cell(row=r, column=channel_col).value == name:
+            return
+    ws.cell(row=ws.max_row + 1, column=channel_col).value = name
+
+
+def convert_to_yingmei(tr, output_path, region='us', order_list_path=None,
+                       expected_station=None):
+    """TR发票 → 英美 下单模版
+
+    region='us' → 英美-美国空海运发票模版9.15更新.xlsx
+    region='eu' → 英美-欧洲英国加拿大发票模板9.8更新.xlsx
+
+    与天图/航乐/美琦不同，这是**下单模版**：无运单号、无总价/合计块、无开票日期。
+    关键字规则：
+      - 地址字段**剥掉模版 VLOOKUP**，直接写 TR 地址值（同天图做法）
+      - 申报币种按目的国自动填（US/CA→USD、GB/UK→GBP、欧洲→EUR），见 _currency_for_country
+      - 客户货箱长/宽/高 套用 _apply_dim_rule（2026-09-24 下降调整规则）
+      - 报关方式归一到模版词表（买单报关/报关退税/合并报关），见 _normalize_customs_yingmei
+      - 无来源的列留空：W 承运商 / X 跟踪号 / EU 的 Y 产品尺寸 / Z 产地
+      - 产品图片列（S）只写源图片链接文本，不做图片嵌入（模版无 media/drawing）
+
+    order_list_path: 提供则按地址库编码匹配运单号回填 B14 客户订单号，
+                     并抓取「供应商服务」回填 B1 服务。
+    expected_station: 所在货站（US B21 / EU B22），网页/CLI 传入，空则留空由人工选。
+    """
+    spec = YINGMEI_SPECS.get(region)
+    if not spec:
+        print(f'❌ ERROR: 未知 region: {region}（应为 us 或 eu）')
+        return False
+
+    template_path = spec['template']
+    print(f'📄 英美({spec["label"]})模板: {template_path}')
+    if not os.path.exists(template_path):
+        print('❌ ERROR: 英美模板文件不存在!')
+        return False
+
+    shutil.copy(template_path, output_path)
+    wb = load_workbook(output_path)
+    ws = wb['模板']
+
+    # 模版自带的空行格式范围（超出部分需要复制行 26 的样式）
+    template_last_formatted_row = ws.max_row
+
+    # ── 样式定义 ──
+    thin_side = Side(style='thin')
+    thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    font_value = Font(name='微软雅黑', size=10)
+    font_data = Font(name='微软雅黑', size=10)
+    center_align = Alignment(horizontal='center', vertical='center')
+
+    def set_cell(col, row, value, font=None, align=None, border=None, number_format=None):
+        cell = ws[f'{col}{row}']
+        cell.value = value
+        if font:
+            cell.font = font
+        if align:
+            cell.alignment = align
+        if border:
+            cell.border = border
+        if number_format:
+            cell.number_format = number_format
+        return cell
+
+    # ── 表头 B1-B24 ──
+    # 规则：每个格子都显式写（含空串），一次性覆盖模版里的 VLOOKUP 公式与残留样例值
+    # （ONT8 / FBA18XZPN0ZR / A1美森正班海派 / EU 的占位符「渠道名称」）。
+    country = (tr.get('收件人国家代码(二字代码)', '')
+               or tr.get('收件人国家代码', '') or '').strip()
+
+    # B1: 服务 = 订单列表对应订单号的「供应商服务」，未命中回退 TR 服务；
+    #     不在渠道下拉清单内则追加（美琦同名规则）
+    service_name = _match_supplier_service(tr, order_list_path) or tr.get('服务', '')
+    if service_name:
+        _append_channel_option(wb, spec['channel_col'], service_name)
+    set_cell('B', 1, service_name, font_value)
+
+    # B2: 地址库编码（亚马逊仓库代码）
+    #     TR 发票没有「地址库编码」列（实测恒空），回退取「收件人姓名」= 仓库代码（RFD2/POZ1…）
+    set_cell('B', 2, (tr.get('地址库编码', '') or tr.get('收件人姓名', '')).strip(), font_value)
+
+    # B3-B13: 收件人信息 —— 剥掉模版 VLOOKUP，直接写 TR 值
+    set_cell('B', 3, tr.get('收件人姓名', ''), font_value)
+    set_cell('B', 4, tr.get('收件人公司', ''), font_value)
+    set_cell('B', 5, tr.get('收件人地址一', ''), font_value)
+    set_cell('B', 6, tr.get('收件人地址二', ''), font_value)
+    set_cell('B', 7, tr.get('收件人地址三', ''), font_value)
+    set_cell('B', 8, tr.get('收件人城市', ''), font_value)
+    set_cell('B', 9, tr.get('收件人省份/州', ''), font_value)
+    set_cell('B', 10, tr.get('收件人邮编', ''), font_value)
+    set_cell('B', 11, country or 'US', font_value)
+    set_cell('B', 12, tr.get('收件人电话', ''), font_value)
+    set_cell('B', 13, tr.get('收件人邮箱', ''), font_value)
+
+    # B14: 客户订单号 = TR 客户订单号；提供订单列表则按地址库编码查运单号覆盖
+    order_no = _match_waybill(tr, order_list_path) or tr.get('客户订单号', '') or ''
+    set_cell('B', 14, order_no, font_value)
+
+    # B15/B16: 带电/带磁 —— 本模版词表是 是/否（不是天图的 带电/不带电）
+    set_cell('B', 15, '是' if tr.get('带电', '否') == '是' else '否', font_value)
+    set_cell('B', 16, '是' if tr.get('带磁', '否') == '是' else '否', font_value)
+
+    # B17: 报关方式 → 模版词表
+    set_cell('B', 17, _normalize_customs_yingmei(tr.get('报关方式')), font_value)
+
+    # B18: 清关方式 —— TR 实测恒空，且 TR 的「交税方式=包税」不在任何模版的清关下拉词表里，
+    #      没有可靠映射；故有值才透传，空则**保留模版自带默认**（US「否」，EU 空）
+    clear_customs = str(tr.get('清关方式', '') or '').strip()
+    if clear_customs:
+        set_cell('B', 18, clear_customs, font_value)
+
+    # B19: VAT号
+    set_cell('B', 19, tr.get('VAT号', ''), font_value)
+
+    # 箱数 = TR 箱数，空则按明细箱号累加
+    box_total = tr.get('箱数', '')
+    if box_total in (None, ''):
+        box_total = sum(_parse_box_count(dr['A']) for dr in tr.data_rows)
+
+    currency = _currency_for_country(country, tr.get('申报币种', ''))
+    station = (expected_station or '').strip()
+
+    if spec['has_eori']:
+        # EU：B20 EORI* → 币种/货站/备注/箱数 整体后移一行
+        set_cell('B', 20, tr.get('EORI号', ''), font_value)
+        set_cell('B', 21, currency, font_value)
+        set_cell('B', 22, station, font_value)
+        set_cell('B', 23, '', font_value)          # 备注
+        set_cell('B', 24, box_total, font_value)
+    else:
+        # US：B22 包退运 / B23 备注 模版本就为空
+        set_cell('B', 20, currency, font_value)
+        set_cell('B', 21, station, font_value)
+        set_cell('B', 22, '', font_value)          # 包退运
+        set_cell('B', 23, '', font_value)          # 备注
+        set_cell('B', 24, box_total, font_value)
+
+    # ── 明细 Row 26+ ← TR 数据行 ──
+    # 模版第 26 行起本来就空（无样例行、无合计行），无需清行；
+    # 也**不要**照抄天图的清边框循环——那会剥掉模版自带格式。
+    last_col_idx = ord(spec['last_item_col']) - 64   # 'X'→24，'Z'→26
+
+    def _item_cell(col, r, value, number_format=None):
+        """写明细单元格；超出模版已格式化范围时，从第 26 行复制样式。"""
+        if r > template_last_formatted_row:
+            src = ws[f'{col}{YINGMEI_DATA_START_ROW}']
+            dst = ws[f'{col}{r}']
+            dst.font = copy(src.font)
+            dst.border = copy(src.border)
+            dst.fill = copy(src.fill)
+            dst.alignment = copy(src.alignment)
+            dst.protection = copy(src.protection)
+            if src.number_format:
+                dst.number_format = src.number_format
+        cell = ws[f'{col}{r}']
+        cell.value = value
+        if number_format:
+            cell.number_format = number_format
+        return cell
+
+    for i, dr in enumerate(tr.data_rows):
+        r = YINGMEI_DATA_START_ROW + i
+
+        # A 货箱编号：源箱号原值（天图式，不重编号、不逐箱展开）
+        _item_cell('A', r, dr['A'])
+        # B PO Number：行级 V 列优先，回退头部 PO Number
+        _item_cell('B', r, dr.get('V') or tr.get('PO Number', ''))
+        # C 客户货箱重量(KG)
+        _item_cell('C', r, dr['B'] if dr['B'] is not None else '', '0.0')
+        # D/E/F 客户货箱长/宽/高(CM) —— 套用 _apply_dim_rule
+        # （天图把重量/长/宽/高写在 O-R；英美写在 C-F，含义一致、列位不同）
+        _item_cell('D', r, _apply_dim_rule(dr['C']) if dr['C'] is not None else '', '0')
+        _item_cell('E', r, _apply_dim_rule(dr['D']) if dr['D'] is not None else '', '0')
+        _item_cell('F', r, _apply_dim_rule(dr['E']) if dr['E'] is not None else '', '0')
+        # G 产品SKU
+        _item_cell('G', r, dr.get('U', ''))
+        # H/I 中文/英文品名（注意英美是 中→英，与天图的 英→中 相反）
+        _item_cell('H', r, dr['G'])
+        _item_cell('I', r, dr['F'])
+        # J 申报单价
+        _item_cell('J', r, dr['H'] if dr['H'] is not None else '', '#,##0.00')
+        # K 申报数量
+        _item_cell('K', r, dr['I'] if dr['I'] is not None else '', '0')
+        # L 材质 / M 海关编码（原值，不用 _format_hs_code，美琦先例）
+        _item_cell('L', r, dr['J'])
+        _item_cell('M', r, dr['K'])
+        # N 用途 / O 品牌 / P 型号 / Q 销售链接 / R 销售价格
+        _item_cell('N', r, dr['L'])
+        _item_cell('O', r, dr['M'])
+        _item_cell('P', r, dr['N'])
+        _item_cell('Q', r, dr['O'] if dr['O'] else '')
+        _item_cell('R', r, dr['P'] if dr['P'] is not None else '')
+        # S 产品图片链接：只写源链接文本（模版无 media/drawing，不做图片嵌入）
+        _item_cell('S', r, dr.get('Q', '') or '')
+        # T 产品重量 / U ASIN / V FNSKU
+        _item_cell('T', r, dr['R'] if dr['R'] is not None else '')
+        _item_cell('U', r, dr['S'])
+        _item_cell('V', r, dr['T'])
+        # W 承运商 / X 跟踪号：TR 发票无来源 → 留空
+        _item_cell('W', r, '')
+        _item_cell('X', r, '')
+        # EU 独有：Y 产品尺寸 / Z 产地 —— 无来源，留空（不臆造）
+        if last_col_idx >= 26:
+            _item_cell('Y', r, '')
+            _item_cell('Z', r, '')
+
+    wb.save(output_path)
+
+    print(f'✅ 英美({spec["label"]})下单模版已生成: {os.path.basename(output_path)}')
+    print(f'   数据: {len(tr.data_rows)} 行, 箱数: {box_total}, 币种: {currency or "(空)"}')
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 #  4. 批处理 — 目录中所有 TR 发票
 # ═══════════════════════════════════════════════════════════════
 
@@ -1545,8 +1855,8 @@ def batch_convert(input_dir, output_dir, target='天图'):
     # 找到所有TR发票文件
     files = [f for f in os.listdir(input_dir)
              if f.endswith('.xlsx') and '订单' not in f
-             and '模板' not in f and '天图' not in f
-             and '航乐' not in f and '美琦' not in f]
+             and '模板' not in f and '模版' not in f and '天图' not in f
+             and '航乐' not in f and '美琦' not in f and '英美' not in f]
     files.sort()
 
     if not files:
@@ -1579,6 +1889,10 @@ def batch_convert(input_dir, output_dir, target='天图'):
                 ok = convert_to_hangle(tr, out_path, region='eu')
             elif target == '美琦':
                 ok = convert_to_meiqi(tr, out_path)
+            elif target == '英美-美国':
+                ok = convert_to_yingmei(tr, out_path, region='us')
+            elif target == '英美-英欧加':
+                ok = convert_to_yingmei(tr, out_path, region='eu')
             else:
                 print(f'❌ 未知目标格式: {target}')
                 return
@@ -1884,13 +2198,17 @@ def main():
   python3 convert_invoice.py TR发票.xlsx --to 天图
   python3 convert_invoice.py TR发票.xlsx --to 航乐-uk 输出文件.xlsx
   python3 convert_invoice.py TR发票.xlsx --to 航乐-eu
-  python3 convert_invoice.py --batch ./发票 --to 天图 --out ./输出
+  python3 convert_invoice.py TR发票.xlsx --to 英美-美国 --station 深圳宝安站点
+  python3 convert_invoice.py TR发票.xlsx --to 英美-英欧加 --station 义乌站点
+  python3 convert_invoice.py TR发票.xlsx --to 美琦 --station 清溪仓
+  python3 convert_invoice.py --batch --in-dir ./发票 --to 天图 --out-dir ./输出
         """
     )
     parser.add_argument('input', nargs='?',
                         help='TR发票 .xlsx 文件路径')
     parser.add_argument('--to', '-t', default='天图',
-                        choices=['天图', '航乐-uk', '航乐-eu', '美琦'],
+                        choices=['天图', '航乐-uk', '航乐-eu', '美琦',
+                                 '英美-美国', '英美-英欧加'],
                         help='目标供应商格式 (默认: 天图)')
     parser.add_argument('output', nargs='?',
                         help='输出文件路径 (可选，默认自动生成)')
@@ -1902,6 +2220,8 @@ def main():
                         help='批量模式的输出目录 (默认: ./output)')
     parser.add_argument('--order-list', default=None,
                         help='订单列表 .xlsx（含「地址库编码」「运单号」列，可选；按地址库编码回填客户订单号为运单号）')
+    parser.add_argument('--station', default=None,
+                        help='所在货站 / 预计交货站点（可选；英美与美琦目标使用，如：深圳宝安站点）')
 
     # 用 parse_intermixed_args 支持 `输入 --to 目标 输出` 的位置参数穿插
     args = parser.parse_intermixed_args()
@@ -1941,6 +2261,12 @@ def main():
         elif args.to == '美琦':
             args.output = os.path.join(os.path.dirname(args.input),
                                        f'{base_name}-美琦.xlsx')
+        elif args.to == '英美-美国':
+            args.output = os.path.join(os.path.dirname(args.input),
+                                       f'{base_name}-英美-美国.xlsx')
+        elif args.to == '英美-英欧加':
+            args.output = os.path.join(os.path.dirname(args.input),
+                                       f'{base_name}-英美-英欧加.xlsx')
 
     # 执行转换
     if args.to == '天图':
@@ -1950,7 +2276,14 @@ def main():
     elif args.to == '航乐-eu':
         convert_to_hangle(tr, args.output, region='eu', order_list_path=args.order_list)
     elif args.to == '美琦':
-        convert_to_meiqi(tr, args.output, order_list_path=args.order_list)
+        convert_to_meiqi(tr, args.output, order_list_path=args.order_list,
+                         expected_station=args.station)
+    elif args.to == '英美-美国':
+        convert_to_yingmei(tr, args.output, region='us', order_list_path=args.order_list,
+                           expected_station=args.station)
+    elif args.to == '英美-英欧加':
+        convert_to_yingmei(tr, args.output, region='eu', order_list_path=args.order_list,
+                           expected_station=args.station)
 
 
 if __name__ == '__main__':

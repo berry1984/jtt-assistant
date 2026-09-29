@@ -31,7 +31,7 @@ sys.path.insert(0, INVOICE_DIR)
 
 from gen_bill import load_data, build_rows, generate_bill, parse_order_date
 from convert_invoice import (TRInvoice, convert_to_tiantu, convert_to_hangle,
-                             convert_to_meiqi, _match_waybill)
+                             convert_to_meiqi, convert_to_yingmei, _match_waybill)
 
 # ── 提单及电放保函生成模块 ──
 from gen_bl_docs import generate_bl_docs
@@ -96,6 +96,8 @@ TARGET_OPTIONS = {
     '航乐-uk': '航乐-英国发票',
     '航乐-eu': '航乐-欧洲发票',
     '美琦': '美琦美线发票',
+    '英美-美国': '英美-美国空海运发票',
+    '英美-英欧加': '英美-欧洲/英国/加拿大发票',
 }
 
 
@@ -271,9 +273,9 @@ def invoice_convert():
 
         tr = TRInvoice(invoice_path)
 
-        # ── 提取图片到临时目录（供 IMAGE() 公式以 HTTP URL 引用；美琦新版无图片列，跳过） ──
+        # ── 提取图片到临时目录（供 IMAGE() 公式以 HTTP URL 引用；美琦/英美的模版无图片列，跳过） ──
         image_url_base = None
-        if target != '美琦':
+        if target not in ('美琦', '英美-美国', '英美-英欧加'):
             image_session_id = uuid.uuid4().hex[:12]
             session_img_dir = os.path.join(TEMP_IMAGE_DIR, image_session_id)
             os.makedirs(session_img_dir, exist_ok=True)
@@ -311,8 +313,12 @@ def invoice_convert():
             if output_name.startswith(' '):
                 output_name = output_name.lstrip()
         else:
-            ext_map = {'天图': '天图', '美琦': '美琦'}
-            output_name = f"{base_name}-{ext_map.get(target, '天图')}.xlsx"
+            ext_map = {'天图': '天图', '美琦': '美琦',
+                       '英美-美国': '英美-美国', '英美-英欧加': '英美-英欧加'}
+            if target not in ext_map:
+                flash('请选择有效的目标格式')
+                return redirect('/invoice')
+            output_name = f"{base_name}-{ext_map[target]}.xlsx"
 
         output_path = os.path.join(tmp_dir, output_name)
 
@@ -328,6 +334,17 @@ def invoice_convert():
         elif target == '美琦':
             ok = convert_to_meiqi(tr, output_path, order_list_path=order_list_path,
                                   expected_station=expected_station)
+        elif target == '英美-美国':
+            ok = convert_to_yingmei(tr, output_path, region='us',
+                                    order_list_path=order_list_path,
+                                    expected_station=expected_station)
+        elif target == '英美-英欧加':
+            ok = convert_to_yingmei(tr, output_path, region='eu',
+                                    order_list_path=order_list_path,
+                                    expected_station=expected_station)
+        else:
+            flash('请选择有效的目标格式')
+            return redirect('/invoice')
 
         if not ok:
             flash('转换失败，请检查源文件格式')

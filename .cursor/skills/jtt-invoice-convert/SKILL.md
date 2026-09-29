@@ -1,18 +1,20 @@
 ---
 name: jtt-invoice-convert
-description: Converts TR/思锐/赛诺吉 invoices to 天图, 航乐, or 美琦 supplier templates. Use when working on 发票转换, convert_invoice.py, TR→天图, 航乐发票, 美琦发票, 产品图片不显示, twoCellAnchor, or Page1 sheet mapping.
+description: Converts TR/思锐/赛诺吉 invoices to 天图, 航乐, 美琦, or 英美 supplier templates. Use when working on 发票转换, convert_invoice.py, TR→天图, 航乐发票, 美琦发票, 英美发票/英美下单模版, 所在货站, 产品图片不显示, twoCellAnchor, or Page1 sheet mapping.
 ---
 
-# 发票转换 TR→天图/航乐/美琦
+# 发票转换 TR→天图/航乐/美琦/英美
 
 ## Quick Start
 
 ```bash
 cd 发票转换
-python3 convert_invoice.py <源发票.xlsx> <输出.xlsx> [--target 天图|航乐-uk|航乐-eu|美琦]
+python3 convert_invoice.py <源发票.xlsx> <输出.xlsx> \
+    [--to 天图|航乐-uk|航乐-eu|美琦|英美-美国|英美-英欧加] \
+    [--order-list <订单列表.xlsx>] [--station <所在货站>]
 ```
 
-Web: `POST /invoice_convert` with `invoice_file`, `target`.
+Web: `POST /invoice_convert` with `invoice_file`, `target`（+ 可选 `order_list`、`expected_station`）。
 
 ## Source Format
 
@@ -23,12 +25,16 @@ Web: `POST /invoice_convert` with `invoice_file`, `target`.
 
 - **尺寸（2026-09-24，全目标统一）**：导出的长宽高 = 客户原始长宽高**基础下降调整**（`convert_invoice.py::_apply_dim_rule()`）：
   小数尾数 **> 0.5 → 抹去小数**（45.6→45）；**≤ 0.5 → 整数位 −1**（45.5→44，**整数也一样**：48→47）。
-  写入位置：天图 P/Q/R、航乐 P/Q/R、美琦 G/H/I；**航乐材重(S)/CBM(T) 及合计按调整后尺寸计算**，仅三维均 > 0 时计算。
+  写入位置：天图 P/Q/R、航乐 P/Q/R、美琦 G/H/I、**英美 D/E/F**（重量在 C，无材重/CBM 列）；**航乐材重(S)/CBM(T) 及合计按调整后尺寸计算**，仅三维均 > 0 时计算。
   （旧规则 2026-08-29~09-24「第一位小数 >5 舍小数，否则 −0.5」已废弃）
-- **订单列表匹配（美琦/天图/航乐通用）**：可另传「订单列表 excel」（含「运单号」「仓库代码」「供应商服务」列）。匹配优先级：① 源「客户订单号」== 订单列表「运单号」；② 源「地址库编码」（为空取「收件人姓名」）== 订单列表「仓库代码」。命中行回填两项：**运单号**→客户订单号（美琦 B1、天图 B14、航乐 输出文件名）；**供应商服务**→服务/渠道（**渠道抓取**：美琦 B3、天图 B1、航乐 I7）。未传/未命中/无该列则保留源值。CLI 用 `--order-list`。
+- **订单列表匹配（美琦/天图/航乐/英美通用）**：可另传「订单列表 excel」（含「运单号」「仓库代码」「供应商服务」列）。匹配优先级：① 源「客户订单号」== 订单列表「运单号」；② 源「地址库编码」（为空取「收件人姓名」）== 订单列表「仓库代码」。命中行回填两项：**运单号**→客户订单号（美琦 B1、天图 B14、英美 B14、航乐 输出文件名）；**供应商服务**→服务/渠道（**渠道抓取**：美琦 B3、天图 B1、英美 B1、航乐 I7）。未传/未命中/无该列则保留源值。CLI 用 `--order-list`。
 - **天图**：B3-B13 收件人直填原值；产品总价 = 单价×数量；B1 服务 = 订单列表「供应商服务」（未命中回退源服务）并追加到 Sheet2 下拉
 - **航乐**：输出名 `{客户名} {订单号} {欧洲|英国}发票.xlsx`；I7 渠道 = 订单列表「供应商服务」（未命中回退源服务）
 - **美琦**：收件人信息按地址库编码从 `亚马逊仓库代码` sheet 查表；**海关编码保持源原值（不加小数点）**；报关方式含「退税」→ 一般贸易；渠道未映射时追加到 `服务渠道` 下拉；数据列 A-R，O=产品图片（源图嵌入）、P=PO Number（源 V 列）、Q=物品箱号（单行总箱数）、R=物品FBA ID（货箱编号 `U00000` 前 12 位）
+- **英美（2026-09-29 新增，下单模版非发票）**：`convert_to_yingmei(tr, out, region='us'|'eu', order_list_path, expected_station)`；模板 `英美-美国空海运发票模版9.15更新.xlsx` / `英美-欧洲英国加拿大发票模板9.8更新.xlsx`，主 sheet `模板`，表头 A 标签/B 值（1-24 行）、明细表头 Row 25、数据 Row 26 起。
+  B2 地址库编码（TR 恒空 → 落源「收件人姓名」）、B14 客户订单号、**B15/B16 带电/带磁 = 是/否**（**不是**天图的 带电/不带电）、B17 报关方式归一化到 `买单报关/报关退税/合并报关`（**不要复用美琦的 一般贸易/代理报关**，那两个值不在本模版下拉里）、**申报币种按目的国**（US/CA→USD、GB/UK→GBP、欧洲→EUR，未识别回退源值）、**所在货站来自网页输入框/`--station`**。
+  **表头每格显式写入（含空串）剥离模板 VLOOKUP**；明细 A 列 = 源箱号原值（不重编号）；**不做图片嵌入**（模板无 media/drawing，S 列是文本图片链接列）；W/X（承运商/跟踪号）与 EU 的 Y/Z（产品尺寸/产地）留空。
+  **EU 比 US 多一行 B20 EORI***，故 EU 币种→B21 / 货站→B22 / 备注→B23 / 箱数→B24（US 为 B20 币种 / B21 货站 / B22 包退运 / B23 备注 / B24 箱数）；辅助 sheet（`渠道列表`/`亚马逊地址库`/`地址库`/`站点`）必须保留（喂 DV 下拉）。
 
 ## 产品图片（2026-06 修复）
 
@@ -47,6 +53,7 @@ Web: `POST /invoice_convert` with `invoice_file`, `target`.
 - WPS `cellimages.xml` + DISPIMG 公式（`_extract_wps_cell_images`）
 
 **天图** → M 列；**航乐** → W 列；**美琦** → O 列（同时保留模板表头图 Row≤17）。行高设为 80 以容纳图片。
+**英美无图片列**：两份模版的 S 列是**文本图片链接列**（`产品图片链接`），模板 `xl/media` 全空、无 drawing，所以走文本链接、不做嵌入、不设行高。
 
 Web 版 `app.py` 仍提取图片到 `/temp_images/`，但 CLI/本地转换以 twoCellAnchor 嵌入为准，打开 xlsx 即可见图。
 
@@ -56,6 +63,8 @@ Web 版 `app.py` 仍提取图片到 `/temp_images/`，但 CLI/本地转换以 tw
 |------|------|
 | `发票转换/convert_invoice.py` | 转换引擎 + `_embed_images_as_cell_images` |
 | `发票转换/check_format.py` | 验证 drawing/media 是否写入 |
+| `发票转换/英美-美国空海运发票模版9.15更新.xlsx` | 英美-美国下单模版 |
+| `发票转换/英美-欧洲英国加拿大发票模板9.8更新.xlsx` | 英美-英欧加下单模版 |
 | `TR转天图发票_转换规则说明.md` | 完整字段映射 |
 
 ## Additional Resources

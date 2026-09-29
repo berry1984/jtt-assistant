@@ -155,7 +155,7 @@
   <button class="tab-btn {% if top_active == 'invoice' %}active{% endif %}"
           data-tab="invoice" onclick="switchTab('invoice')">
     📄 发票转换
-    <span class="badge">TR→天图/航乐/美琦</span>
+    <span class="badge">TR→天图/航乐/美琦/英美</span>
   </button>
   <button class="tab-btn {% if top_active == 'picking' %}active{% endif %}"
           data-tab="picking" onclick="switchTab('picking')">
@@ -315,7 +315,7 @@
       </div>
 
       <div class="form-group" id="stationGroup" style="display:none;">
-        <label>预计交货站点 <small>(美琦美线专用，可选，如：清溪仓/义乌仓/中山仓/广州仓/厦门仓/汕头仓/青岛仓)</small></label>
+        <label id="stationLabel">预计交货站点 <small id="stationNote">(美琦美线专用，可选，如：清溪仓/义乌仓/中山仓/广州仓/厦门仓/汕头仓/青岛仓)</small></label>
         <input type="text" name="expected_station" id="stationInput" list="stationList"
                class="format-select" style="height:auto;padding:10px 14px;"
                placeholder="如：清溪仓">
@@ -328,7 +328,29 @@
           <option value="汕头仓"></option>
           <option value="青岛仓"></option>
         </datalist>
-        <div style="font-size:12px;color:#888;margin-top:6px;">填写后输出到美琦发票「预计交货站点」位置</div>
+        <datalist id="stationListYingmei">
+          <option value="深圳宝安站点"></option>
+          <option value="义乌站点"></option>
+          <option value="上海松江站点"></option>
+          <option value="上海青浦站点"></option>
+          <option value="泉州站点"></option>
+          <option value="广州站点"></option>
+          <option value="厦门站点"></option>
+          <option value="中山站点"></option>
+          <option value="福州站点"></option>
+          <option value="青岛站点"></option>
+          <option value="温州站点"></option>
+          <option value="合肥站点"></option>
+          <option value="南城站点"></option>
+          <option value="宁波站点"></option>
+          <option value="杭州站点"></option>
+          <option value="东莞清溪站点"></option>
+          <option value="汕头站点"></option>
+          <option value="金义站点"></option>
+          <option value="临沂站点"></option>
+          <option value="郑州站点"></option>
+        </datalist>
+        <div style="font-size:12px;color:#888;margin-top:6px;" id="stationTip">填写后输出到美琦发票「预计交货站点」位置</div>
       </div>
 
       <button type="submit" class="btn btn-primary" id="invoiceBtn">开始转换</button>
@@ -694,16 +716,36 @@ const DESCS = {
   '航乐-uk': '🇬🇧 航乐英国发票（GBP）：地址/VAT/渠道/包税/物品属性。输出 .xlsx。',
   '航乐-eu': '🇪🇺 航乐欧洲发票（EUR）：结构与英国版一致，货币为欧元。输出 .xlsx。',
   '美琦': '🇺🇸 美琦美线发票：只需匹配地址库编码（收件人信息留空），提货方式默认「自送货」，报关方式/海关编码自动归一化。输出 .xlsx。',
+  '英美-美国': '🇺🇸 英美-美国空海运下单模版：地址直填、币种按目的国（US/CA→USD）、报关方式归一化、带电/带磁是/否。输出 .xlsx。',
+  '英美-英欧加': '🇪🇺 英美-欧洲/英国/加拿大下单模版：多 EORI 行，币种按目的国（GB→GBP / 欧洲→EUR / CA→USD）。输出 .xlsx。',
 };
+
 function updateDesc() {
   const sel = document.getElementById('formatSelect');
   document.getElementById('formatDesc').textContent = DESCS[sel.value] || '';
-  // 订单列表上传区：所有目标（天图/航乐/美琦）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
+  // 订单列表上传区：所有目标（天图/航乐/美琦/英美）均显示（按对应订单号回填运单号 + 抓取供应商服务填服务/渠道）
   const og = document.getElementById('orderListGroup');
   if (og) og.style.display = '';
-  // 预计交货站点：仅美琦目标显示
+  // 预计交货站点 / 所在货站：美琦 与 两个英美目标 显示
   const st = document.getElementById('stationGroup');
-  if (st) st.style.display = (sel.value === '美琦') ? '' : 'none';
+  const isYingmei = (sel.value === '英美-美国' || sel.value === '英美-英欧加');
+  if (st) st.style.display = (sel.value === '美琦' || isYingmei) ? '' : 'none';
+  // 按目标切换候选项与文案（美琦是「仓」叫法，英美是模版自带的 19 个「站点」）
+  const input = document.getElementById('stationInput');
+  const note = document.getElementById('stationNote');
+  const tip = document.getElementById('stationTip');
+  const label = document.getElementById('stationLabel');
+  if (input) {
+    input.setAttribute('list', isYingmei ? 'stationListYingmei' : 'stationList');
+    input.placeholder = isYingmei ? '如：深圳宝安站点' : '如：清溪仓';
+  }
+  if (label) label.childNodes[0].nodeValue = isYingmei ? '所在货站 ' : '预计交货站点 ';
+  if (note) note.textContent = isYingmei
+    ? '(英美模版站点下拉，可选，共 20 个站点)'
+    : '(美琦美线专用，可选，如：清溪仓/义乌仓/中山仓/广州仓/厦门仓/汕头仓/青岛仓)';
+  if (tip) tip.textContent = isYingmei
+    ? '填写后输出到英美下单模版「所在货站*」位置'
+    : '填写后输出到美琦发票「预计交货站点」位置';
 }
 updateDesc();
 
