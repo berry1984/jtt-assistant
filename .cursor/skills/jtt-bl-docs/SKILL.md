@@ -18,8 +18,8 @@ zip_path, telex_ok, bl_ok = generate_bl_docs('data.xlsx')
 
 ## 输入 Excel
 
-Sheet 自动检测（**不限文件名/月份**）：
-1. 含 `提单信息` → 2. 含 `提单` → 3. 第一个 sheet
+**只读取上传文件的第一个 sheet**（不限文件名/月份），不做表名探测。
+即第一个 sheet 必须是提单信息表（如 `8月提单信息`）；提单信息不在首位时需人工挪到第一个。
 
 必填列：`JTT no.` / `引用模板` / `B/L No.` / `渠道` / `cartons` / `KGS` / `CBM` 等。
 

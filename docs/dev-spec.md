@@ -349,7 +349,7 @@ def generate_bl_docs(excel_path: str, output_dir: str=None) -> (str, int, int)
     """返回 (zip_path, telex_count, bl_count)"""
 
 def _load_shipments(excel_path: str) -> list[dict]
-    """Sheet 自动检测：提单信息 > 提单 > 默认；向下填充空白；过滤查验/备注"""
+    """只读第一个 sheet（不探测表名）；向下填充空白；过滤查验/备注"""
 
 def _merge_shipments(group: list[dict]) -> dict
     """按 B/L No 合并多票：cartons/KGS/CBM 累加，marks/desc 拼接"""
